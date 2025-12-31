@@ -1,0 +1,18 @@
+export const COMMON_TIMEZONES = [
+  { value: "America/Los_Angeles", label: "-08:00 PST - America/Los_Angeles" },
+  { value: "America/Denver", label: "-07:00 MST - America/Denver" },
+  { value: "America/Chicago", label: "-06:00 CST - America/Chicago" },
+  { value: "America/New_York", label: "-05:00 EST - America/New_York" },
+  { value: "America/Halifax", label: "-04:00 AST - America/Halifax" },
+  { value: "America/Sao_Paulo", label: "-03:00 BRT - America/Sao_Paulo" },
+  { value: "UTC", label: "+00:00 UTC - UTC" },
+  { value: "Europe/London", label: "+00:00 GMT - Europe/London" },
+  { value: "Europe/Berlin", label: "+01:00 CET - Europe/Berlin" },
+  { value: "Europe/Helsinki", label: "+02:00 EET - Europe/Helsinki" },
+  { value: "Europe/Moscow", label: "+03:00 MSK - Europe/Moscow" },
+  { value: "Asia/Dubai", label: "+04:00 GST - Asia/Dubai" },
+  { value: "Asia/Kolkata", label: "+05:30 IST - Asia/Kolkata" },
+  { value: "Asia/Shanghai", label: "+08:00 CST - Asia/Shanghai" },
+  { value: "Asia/Tokyo", label: "+09:00 JST - Asia/Tokyo" },
+  { value: "Australia/Sydney", label: "+10:00 AEST - Australia/Sydney" },
+];

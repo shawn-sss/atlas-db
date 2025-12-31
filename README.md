@@ -1,1 +1,3 @@
-# atlas-db
+# Atlas DB
+
+Coming soon!
