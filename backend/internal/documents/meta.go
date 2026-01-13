@@ -12,6 +12,7 @@ var (
 	statusValues  = map[string]struct{}{
 		"published": {},
 		"unlisted":  {},
+		"draft":     {},
 	}
 )
 
@@ -161,14 +162,24 @@ func ensureFrontMatterID(raw string, id string) (string, bool) {
 	if frontMatterHasID(block) {
 		return raw, false
 	}
-	idx := strings.Index(block, "\n")
+
+	
 	insertion := fmt.Sprintf("id: %s\n", id)
-	var newBlock string
-	if idx == -1 {
-		newBlock = block + "\n" + insertion
-	} else {
-		newBlock = block[:idx+1] + insertion + block[idx+1:]
+	lines := strings.Split(block, "\n")
+
+	
+	var newLines []string
+	inserted := false
+	for i, line := range lines {
+		if i > 0 && strings.TrimSpace(line) == "---" && !inserted {
+			
+			newLines = append(newLines, insertion[:len(insertion)-1]) 
+			inserted = true
+		}
+		newLines = append(newLines, line)
 	}
+
+	newBlock := strings.Join(newLines, "\n")
 	result := trimmed[:loc[0]] + newBlock + trimmed[loc[1]:]
 	if hasBOM {
 		result = "\ufeff" + result

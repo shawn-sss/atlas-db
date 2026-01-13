@@ -13,6 +13,7 @@ func RegisterRoutes(r chi.Router, db *sql.DB) {
 	r.Get("/documents/search", searchDocumentsHandler(db))
 	r.Get("/documents/tree", navTreeHandler(db))
 	r.Get("/document/backlinks/*", backlinksHandler(db))
+	r.With(auth.AuthMiddleware(db)).Put("/document/status/*", documentStatusHandler(db))
 	r.Get("/document/*", documentDetailHandler(db))
 	r.With(auth.AuthMiddleware(db)).Post("/document/*", documentSaveHandler(db))
 	r.With(auth.AuthMiddleware(db)).Post("/document/move", moveDocumentHandler(db))

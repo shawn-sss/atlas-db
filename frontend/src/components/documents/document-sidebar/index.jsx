@@ -11,9 +11,7 @@ export default function DocumentSidebar({
   searchError,
   sectionFilter,
   setSectionFilter,
-  statusOptions,
-  statusFilter,
-  setStatusFilter,
+  onSectionChange,
   treeLoading,
   tree,
   onSelect,
@@ -29,6 +27,7 @@ export default function DocumentSidebar({
   openNew,
   disableNew,
   onMove,
+  onSetStatus,
 }) {
   return (
     <aside className="doc-sidebar">
@@ -78,7 +77,11 @@ export default function DocumentSidebar({
                 className={`section-button${
                   sectionFilter === "home" ? " active" : ""
                 }`}
-                onClick={() => setSectionFilter("home")}
+                onClick={() =>
+                  onSectionChange
+                    ? onSectionChange("home")
+                    : setSectionFilter("home")
+                }
               >
                 Home
               </button>
@@ -87,31 +90,40 @@ export default function DocumentSidebar({
                 className={`section-button${
                   sectionFilter === "library" ? " active" : ""
                 }`}
-                onClick={() => setSectionFilter("library")}
+                onClick={() =>
+                  onSectionChange
+                    ? onSectionChange("library")
+                    : setSectionFilter("library")
+                }
               >
                 Library
               </button>
-            </div>
-            <div className="doc-status-filter">
-              {statusOptions.map((opt) => {
-                const active = !!statusFilter[opt.key];
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    className={`doc-status-button${active ? " active" : ""}`}
-                    onClick={() =>
-                      setStatusFilter({
-                        published: false,
-                        unlisted: false,
-                        [opt.key]: true,
-                      })
-                    }
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+              <button
+                type="button"
+                className={`section-button${
+                  sectionFilter === "unlisted" ? " active" : ""
+                }`}
+                onClick={() =>
+                  onSectionChange
+                    ? onSectionChange("unlisted")
+                    : setSectionFilter("unlisted")
+                }
+              >
+                Unlisted
+              </button>
+              <button
+                type="button"
+                className={`section-button${
+                  sectionFilter === "drafts" ? " active" : ""
+                }`}
+                onClick={() =>
+                  onSectionChange
+                    ? onSectionChange("drafts")
+                    : setSectionFilter("drafts")
+                }
+              >
+                Drafts
+              </button>
             </div>
           </div>
         </div>
@@ -195,6 +207,7 @@ export default function DocumentSidebar({
               onRemoveStartPage={onRemoveStartPage}
               onTogglePin={onTogglePin}
               onToggleHome={onToggleHome}
+              onSetStatus={onSetStatus}
               onDelete={onDelete}
               canDelete={canDelete}
               collapsedFolders={collapsedFolders}

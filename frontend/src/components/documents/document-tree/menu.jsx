@@ -54,6 +54,7 @@ export const DocumentTreeMenuItems = React.memo(
     canDelete,
     onSetStartPage,
     onToggleHome,
+    onToggleUnlisted,
     onTogglePin,
     onDelete,
     onRemoveStartPage,
@@ -64,6 +65,20 @@ export const DocumentTreeMenuItems = React.memo(
       disabled: homeActionDisabled,
       title: homeActionTitle,
     } = getHomeActionProps(node);
+
+    const isDraft = (node?.status || "").toLowerCase() === "draft";
+
+    if (isDraft) {
+      return (
+        <>
+          {canDelete && (
+            <button className="doc-tree-menu-item" onClick={onDelete}>
+              Delete permanently
+            </button>
+          )}
+        </>
+      );
+    }
 
     return (
       <>
@@ -80,6 +95,13 @@ export const DocumentTreeMenuItems = React.memo(
         >
           {homeActionLabel}
         </button>
+        {onToggleUnlisted && (
+          <button className="doc-tree-menu-item" onClick={onToggleUnlisted}>
+            {(node?.status || "").toLowerCase() === "unlisted"
+              ? "Return to Library"
+              : "Send to Unlisted"}
+          </button>
+        )}
         <button className="doc-tree-menu-item" onClick={onTogglePin}>
           {node?.is_pinned ? "Unpin from quick access" : "Pin to quick access"}
         </button>

@@ -53,7 +53,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			return
 		}
 
-		_ = os.RemoveAll(contentpath.ContentRoot)
+		_ = os.RemoveAll(contentpath.DocsRoot)
 
 		_ = os.RemoveAll("./data/history")
 		if !keepBackups {
@@ -61,8 +61,10 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			_ = os.RemoveAll("./data/backups")
 		}
 
-		_ = os.MkdirAll(contentpath.ContentRoot, 0o755)
-		_ = os.MkdirAll(filepath.Join(contentpath.ContentRoot, "docs"), 0o755)
+		_ = os.MkdirAll(contentpath.DocsRoot, 0o755)
+		_ = os.MkdirAll(contentpath.PublishedRoot, 0o755)
+		_ = os.MkdirAll(contentpath.UnlistedRoot, 0o755)
+		_ = os.MkdirAll(contentpath.DraftsRoot, 0o755)
 		_ = os.MkdirAll("./data/history", 0o755)
 		if !keepBackups {
 			_ = os.MkdirAll("./data/backups", 0o755)

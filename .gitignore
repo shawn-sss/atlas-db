@@ -68,7 +68,7 @@ pnpm-debug.log*
 /backend/data/uploads/
 
 # Ignore generated docs created at setup runtime
-/backend/content/docs/
+/backend/docs/
 
 # Other IDE/editor metadata
 .idea/

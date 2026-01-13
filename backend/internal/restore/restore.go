@@ -20,21 +20,48 @@ func FinalizeRestore(stageDir string) error {
 
 	ts := time.Now().Format("20060102T150405")
 
-	stagedContent := filepath.Join(stageDir, "content")
-	if info, err := os.Stat(stagedContent); err == nil && info.IsDir() {
-		current := contentpath.ContentRoot
+	
+	stagedDocs := filepath.Join(stageDir, "docs")
+	if info, err := os.Stat(stagedDocs); err == nil && info.IsDir() {
+		current := contentpath.DocsRoot
 		backup := current + ".old." + ts
 		if _, err := os.Stat(current); err == nil {
 			if err := os.Rename(current, backup); err != nil {
-				return fmt.Errorf("move current content aside: %w", err)
+				return fmt.Errorf("move current docs aside: %w", err)
 			}
 		}
-		if err := os.Rename(stagedContent, current); err != nil {
-
+		if err := os.Rename(stagedDocs, current); err != nil {
 			_ = os.Rename(backup, current)
-			return fmt.Errorf("promote staged content: %w", err)
+			return fmt.Errorf("promote staged docs: %w", err)
 		}
 		_ = os.RemoveAll(backup)
+	}
+
+	
+	stagedContent := filepath.Join(stageDir, "content")
+	if info, err := os.Stat(stagedContent); err == nil && info.IsDir() {
+		
+		oldDocs := filepath.Join(stagedContent, "docs")
+		if _, err := os.Stat(oldDocs); err == nil {
+			if err := os.MkdirAll(contentpath.PublishedRoot, 0o755); err != nil {
+				return fmt.Errorf("create published folder: %w", err)
+			}
+			
+			filepath.WalkDir(oldDocs, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return nil
+				}
+				rel, err := filepath.Rel(oldDocs, path)
+				if err != nil {
+					return nil
+				}
+				dst := filepath.Join(contentpath.PublishedRoot, rel)
+				os.MkdirAll(filepath.Dir(dst), 0o755)
+				data, _ := os.ReadFile(path)
+				os.WriteFile(dst, data, 0o644)
+				return nil
+			})
+		}
 	}
 
 	dbDst := filepath.Join(".", "data", "app.db")

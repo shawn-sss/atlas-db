@@ -1,6 +1,6 @@
 export const DEFAULT_WELCOME_MESSAGE = `---
-title: Welcome to Atlas DB
 status: published
+owner: owner
 ---
 
 # Welcome to Atlas DB

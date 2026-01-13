@@ -6,4 +6,6 @@
 };
 
 export const normalizeStatus = (value) =>
-  value === "published" || value === "unlisted" ? value : "published";
+  value === "published" || value === "unlisted" || value === "draft"
+    ? value
+    : "published";

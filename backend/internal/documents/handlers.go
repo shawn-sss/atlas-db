@@ -69,13 +69,29 @@ func docErr(w http.ResponseWriter, status int, message string) {
 
 func listDocumentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ensureContentIndexFresh(db)
 		statuses := parseStatusParam(r.URL.Query().Get("status"))
 		if len(statuses) == 0 {
 			statuses = []string{"published"}
 		}
+		ownerFilter := ""
+		if containsStatus(statuses, "draft") {
+			u := auth.UserFromContext(r)
+			if u == nil {
+				if found, err := auth.GetUserFromRequest(r, db); err == nil {
+					u = found
+				}
+			}
+			if u == nil {
+				docErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			ownerFilter = u.Username
+			statuses = []string{"draft"}
+		}
 		pathPrefix := cleanPrefix(r.URL.Query().Get("pathPrefix"))
 
-		query, args := buildDocumentQuery(statuses, pathPrefix)
+		query, args := buildDocumentQuery(statuses, pathPrefix, ownerFilter)
 		rows, err := db.Query(query, args...)
 		if err != nil {
 			docErr(w, http.StatusInternalServerError, "query error")
@@ -113,12 +129,28 @@ func listDocumentsHandler(db *sql.DB) http.HandlerFunc {
 
 func navTreeHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ensureContentIndexFresh(db)
 		query := r.URL.Query()
 		statuses := parseStatusParam(query.Get("status"))
 		if len(statuses) == 0 {
 			statuses = []string{"published", "unlisted"}
 		}
-		queryStr, args := buildDocumentQuery(statuses, "")
+		ownerFilter := ""
+		if containsStatus(statuses, "draft") {
+			u := auth.UserFromContext(r)
+			if u == nil {
+				if found, err := auth.GetUserFromRequest(r, db); err == nil {
+					u = found
+				}
+			}
+			if u == nil {
+				docErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			ownerFilter = u.Username
+			statuses = []string{"draft"}
+		}
+		queryStr, args := buildDocumentQuery(statuses, "", ownerFilter)
 
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -164,6 +196,7 @@ func navTreeHandler(db *sql.DB) http.HandlerFunc {
 
 func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ensureContentIndexFresh(db)
 		queryText := strings.TrimSpace(r.URL.Query().Get("q"))
 		if queryText == "" {
 			docErr(w, http.StatusBadRequest, "missing query")
@@ -176,6 +209,21 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		statuses := searchStatuses(r, r.URL.Query().Get("status"))
+		ownerFilter := ""
+		if containsStatus(statuses, "draft") {
+			u := auth.UserFromContext(r)
+			if u == nil {
+				if found, err := auth.GetUserFromRequest(r, db); err == nil {
+					u = found
+				}
+			}
+			if u == nil {
+				docErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			ownerFilter = u.Username
+			statuses = []string{"draft"}
+		}
 
 		field := strings.TrimSpace(r.URL.Query().Get("field"))
 		matchPattern := queryText
@@ -197,6 +245,10 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 			for _, status := range statuses {
 				args = append(args, status)
 			}
+		}
+		if ownerFilter != "" {
+			filters = append(filters, "d.owner = ?")
+			args = append(args, ownerFilter)
 		}
 		rankExpr := "bm25(documents_fts, 0.6, 0.35, 0.1)"
 		var builder strings.Builder
@@ -250,12 +302,21 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 
 func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ensureContentIndexFresh(db)
 		slug := cleanSlugParam(chi.URLParam(r, "*"))
 		if slug == "" {
 			docErr(w, http.StatusBadRequest, "missing slug")
 			return
 		}
-		path, err := docPathFromSlug(slug)
+		
+		var dbStatus sql.NullString
+		db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&dbStatus)
+		docStatus := "published"
+		if dbStatus.Valid && dbStatus.String != "" {
+			docStatus = dbStatus.String
+		}
+
+		path, err := docPathFromSlug(slug, docStatus)
 		if err != nil {
 			docErr(w, http.StatusBadRequest, "invalid slug")
 			return
@@ -269,7 +330,7 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 		isFolder := strings.EqualFold(filepath.Base(path), "_index.md")
 
 		var docID sql.NullString
-		var title, status, parent sql.NullString
+		var title, statusRow, parent sql.NullString
 		var created sql.NullString
 		var updated sql.NullString
 		var isStart int
@@ -277,11 +338,23 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 		var isHome int
 		var links sql.NullString
 		var owner sql.NullString
-		err = db.QueryRow(`SELECT doc_id,title,status,created_at,updated_at,parent_slug,is_start_page,is_pinned,is_home,links,owner FROM documents WHERE slug = ?`, slug).Scan(&docID, &title, &status, &created, &updated, &parent, &isStart, &isPinned, &isHome, &links, &owner)
+		err = db.QueryRow(`SELECT doc_id,title,status,created_at,updated_at,parent_slug,is_start_page,is_pinned,is_home,links,owner FROM documents WHERE slug = ?`, slug).Scan(&docID, &title, &statusRow, &created, &updated, &parent, &isStart, &isPinned, &isHome, &links, &owner)
 		validRow := err == nil
 		if err != nil && err != sql.ErrNoRows {
 			docErr(w, http.StatusInternalServerError, "query error")
 			return
+		}
+		if validRow && strings.EqualFold(statusRow.String, "draft") {
+			u := auth.UserFromContext(r)
+			if u == nil {
+				if found, err := auth.GetUserFromRequest(r, db); err == nil {
+					u = found
+				}
+			}
+			if u == nil || !strings.EqualFold(strings.TrimSpace(owner.String), strings.TrimSpace(u.Username)) {
+				docErr(w, http.StatusNotFound, "not found")
+				return
+			}
 		}
 
 		meta, body := parseDocumentMetadata(string(content))
@@ -289,7 +362,7 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 			DocID:       strings.TrimSpace(docID.String),
 			Slug:        slug,
 			Title:       title.String,
-			Status:      status.String,
+			Status:      statusRow.String,
 			Owner:       owner.String,
 			CreatedAt:   created.String,
 			UpdatedAt:   updated.String,
@@ -322,7 +395,7 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 		}
 		if resp.UpdatedAt == "" {
 			if fi, err := os.Stat(path); err == nil {
-				resp.UpdatedAt = fi.ModTime().Format(time.RFC3339)
+				resp.UpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
 			}
 		}
 		if resp.CreatedAt == "" {
@@ -351,52 +424,8 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 				targetHub = false
 			}
 		}
-		plainPath, err := docPathForSlug(slug, false)
-		if err != nil {
-			docErr(w, http.StatusBadRequest, "invalid slug")
-			return
-		}
-		hubPath, err := docPathForSlug(slug, true)
-		if err != nil {
-			docErr(w, http.StatusBadRequest, "invalid slug")
-			return
-		}
-		targetPath := plainPath
-		if targetHub {
-			targetPath = hubPath
-		}
 
-		currentPath := ""
-		if _, err := os.Stat(plainPath); err == nil {
-			currentPath = plainPath
-		} else if _, err := os.Stat(hubPath); err == nil {
-			currentPath = hubPath
-		}
-
-		if currentPath == "" {
-			if isReservedSlug(slug) {
-				docErr(w, http.StatusBadRequest, "reserved slug")
-				return
-			}
-		}
-
-		if currentPath != "" && currentPath != targetPath {
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				docErr(w, http.StatusInternalServerError, "write failed")
-				return
-			}
-			if _, err := os.Stat(targetPath); err == nil {
-				_ = os.Remove(targetPath)
-			}
-			if err := os.Rename(currentPath, targetPath); err != nil {
-				docErr(w, http.StatusInternalServerError, "rename failed")
-				return
-			}
-			if !targetHub && currentPath == hubPath {
-				_ = os.Remove(filepath.Dir(currentPath))
-			}
-		}
-		path := targetPath
+		
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			httpx.WriteError(w, http.StatusBadRequest, "READ_DOCUMENT_FAILED", err.Error())
@@ -404,19 +433,78 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		}
 		content := string(body)
 		meta, _ := parseDocumentMetadata(content)
-		if meta.ID == "" {
-			meta.ID = "doc-" + random.GenerateToken(12)
-			if updated, changed := ensureFrontMatterID(content, meta.ID); changed {
-				content = updated
-			}
-		}
+
+		
 		var metadataErr error
 		content, metadataErr = ensureDocumentMetadata(content, &meta, auth.UserFromContext(r))
 		if metadataErr != nil {
 			httpx.WriteError(w, http.StatusBadRequest, "INVALID_METADATA", metadataErr.Error())
 			return
 		}
+
+		
+		if meta.ID == "" {
+			meta.ID = "doc-" + random.GenerateToken(12)
+			if updated, changed := ensureFrontMatterID(content, meta.ID); changed {
+				content = updated
+			}
+		}
+
+		
+		if meta.Status == "draft" {
+			if u := auth.UserFromContext(r); u != nil && strings.TrimSpace(u.Username) != "" {
+				meta.Owner = u.Username
+				if updated, changed := setFrontMatterField(content, "owner", meta.Owner); changed {
+					content = updated
+				}
+			}
+		}
+
+		
+		if u := auth.UserFromContext(r); u != nil {
+			var existingOwner sql.NullString
+			var existingStatus sql.NullString
+			if err := db.QueryRow(`SELECT owner,status FROM documents WHERE slug = ?`, slug).Scan(&existingOwner, &existingStatus); err == nil {
+				if strings.EqualFold(existingStatus.String, "draft") &&
+					!strings.EqualFold(strings.TrimSpace(existingOwner.String), strings.TrimSpace(u.Username)) {
+					docErr(w, http.StatusForbidden, "forbidden")
+					return
+				}
+			}
+		}
+
 		body = []byte(content)
+
+		
+		currentPath, currentStatus, _ := findDocumentPath(slug, targetHub)
+
+		
+		isNew := false
+		if _, err := os.Stat(currentPath); os.IsNotExist(err) {
+			isNew = true
+			if isReservedSlug(slug) {
+				docErr(w, http.StatusBadRequest, "reserved slug")
+				return
+			}
+		}
+
+		
+		targetPath, err := docPathFromSlugWithHint(slug, meta.Status, targetHub)
+		if err != nil {
+			docErr(w, http.StatusBadRequest, "invalid slug")
+			return
+		}
+
+		
+		if !isNew && (currentStatus != meta.Status || currentPath != targetPath) {
+			targetPath, err = moveDocumentToStatus(currentPath, slug, meta.Status, targetHub)
+			if err != nil {
+				docErr(w, http.StatusInternalServerError, "move failed")
+				return
+			}
+		}
+
+		path := targetPath
 		os.MkdirAll(filepath.Dir(path), 0o755)
 
 		existed := false
@@ -472,9 +560,9 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 				var newPath string
 				var pErr error
 				if useIndexLayout {
-					newPath, pErr = docPathFromSlugWithHint(newSlug, true)
+					newPath, pErr = docPathFromSlugWithHint(newSlug, meta.Status, true)
 				} else {
-					newPath, pErr = docPathFromSlug(newSlug)
+					newPath, pErr = docPathFromSlug(newSlug, meta.Status)
 				}
 				if pErr != nil {
 					docErr(w, http.StatusBadRequest, "invalid new slug")
@@ -506,6 +594,14 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
+		if oldSlugVal != "" && oldSlugVal != slug {
+			if _, err := db.Exec(`DELETE FROM documents WHERE slug = ?`, oldSlugVal); err != nil {
+				docErr(w, http.StatusInternalServerError, "db update failed")
+				return
+			}
+			db.Exec(`DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE slug = ?)`, oldSlugVal)
+		}
+
 		title := extractTitle(content)
 		status := meta.Status
 		if status == "" {
@@ -516,7 +612,7 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		if parent != "" {
 			parentVal = sql.NullString{String: parent, Valid: true}
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		createdAt := now
 
 		homeVal := 1
@@ -639,7 +735,9 @@ func documentDeleteHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusBadRequest, "missing slug")
 			return
 		}
-		path, err := docPathFromSlugWithHint(slug, explicitIndex)
+
+		
+		path, _, err := findDocumentPath(slug, explicitIndex)
 		if err != nil {
 			docErr(w, http.StatusBadRequest, "invalid slug")
 			return
@@ -790,7 +888,14 @@ func moveDocumentHandler(db *sql.DB) http.HandlerFunc {
 
 		if isFolder {
 			oldDir := filepath.Dir(root.Path)
-			newIndexPath, err := docIndexPathFromSlug(targetSlug)
+			
+			var status sql.NullString
+			db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status)
+			docStatus := "published"
+			if status.Valid && status.String != "" {
+				docStatus = status.String
+			}
+			newIndexPath, err := docIndexPathFromSlug(targetSlug, docStatus)
 			if err != nil {
 				docErr(w, http.StatusBadRequest, "invalid target")
 				return
@@ -823,7 +928,14 @@ func moveDocumentHandler(db *sql.DB) http.HandlerFunc {
 				docErr(w, http.StatusNotFound, "source not found")
 				return
 			}
-			newFilePath, err = docPathFromSlug(targetSlug)
+			
+			var status sql.NullString
+			db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status)
+			docStatus := "published"
+			if status.Valid && status.String != "" {
+				docStatus = status.String
+			}
+			newFilePath, err = docPathFromSlug(targetSlug, docStatus)
 			if err != nil {
 				docErr(w, http.StatusBadRequest, "invalid target")
 				return
@@ -1040,6 +1152,84 @@ func documentHomeHandler(db *sql.DB, homed bool) http.HandlerFunc {
 	}
 }
 
+func documentStatusHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		slug := cleanSlugParam(chi.URLParam(r, "*"))
+		if slug == "" {
+			docErr(w, http.StatusBadRequest, "missing slug")
+			return
+		}
+		var req struct {
+			Status string `json:"status"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		status := normalizeStatus(req.Status)
+		if status == "" {
+			status = normalizeStatus(r.URL.Query().Get("status"))
+		}
+		if status == "" {
+			docErr(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+
+		like := slug + "/%"
+		rows, err := db.Query(`SELECT slug,path FROM documents WHERE slug = ? OR slug LIKE ?`, slug, like)
+		if err != nil {
+			docErr(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		defer rows.Close()
+
+		type docRow struct {
+			Slug string
+			Path string
+		}
+		var docs []docRow
+		for rows.Next() {
+			var row docRow
+			if scanErr := rows.Scan(&row.Slug, &row.Path); scanErr != nil {
+				docErr(w, http.StatusInternalServerError, "scan error")
+				return
+			}
+			docs = append(docs, row)
+		}
+		if len(docs) == 0 {
+			docErr(w, http.StatusNotFound, "not found")
+			return
+		}
+
+		for _, doc := range docs {
+			content, readErr := os.ReadFile(doc.Path)
+			if readErr != nil {
+				docErr(w, http.StatusNotFound, "not found")
+				return
+			}
+			next, _ := setFrontMatterField(string(content), "status", status)
+			if writeErr := os.WriteFile(doc.Path, []byte(next), 0o644); writeErr != nil {
+				docErr(w, http.StatusInternalServerError, "write failed")
+				return
+			}
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		query := `UPDATE documents SET status = ?, updated_at = ? WHERE slug = ? OR slug LIKE ?`
+		args := []any{status, now, slug, like}
+		if status == "unlisted" || status == "draft" {
+			query = `UPDATE documents SET status = ?, is_home = 0, updated_at = ? WHERE slug = ? OR slug LIKE ?`
+		}
+		res, err := db.Exec(query, args...)
+		if err != nil {
+			docErr(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			docErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func documentHistoryHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slug := cleanSlugParam(chi.URLParam(r, "*"))
@@ -1125,7 +1315,13 @@ func documentHistoryDiffHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var currentData []byte
-		if path, pathErr := docPathFromSlug(slug); pathErr == nil {
+		var status sql.NullString
+		db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status)
+		docStatus := "published"
+		if status.Valid && status.String != "" {
+			docStatus = status.String
+		}
+		if path, pathErr := docPathFromSlug(slug, docStatus); pathErr == nil {
 			if cur, readErr := os.ReadFile(path); readErr == nil {
 				currentData = cur
 			}
@@ -1178,7 +1374,13 @@ func documentRestoreHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusInternalServerError, "read failed")
 			return
 		}
-		path, err := docPathFromSlug(slug)
+		var dbStatus sql.NullString
+		db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&dbStatus)
+		docStatus := "published"
+		if dbStatus.Valid && dbStatus.String != "" {
+			docStatus = dbStatus.String
+		}
+		path, err := docPathFromSlug(slug, docStatus)
 		if err != nil {
 			docErr(w, http.StatusBadRequest, "invalid slug")
 			return
@@ -1213,7 +1415,7 @@ func documentRestoreHandler(db *sql.DB) http.HandlerFunc {
 		if parent != "" {
 			parentVal = sql.NullString{String: parent, Valid: true}
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		createdAt := now
 		_, err = db.Exec(`INSERT INTO documents(slug,title,path,parent_slug,status,owner,created_at,updated_at,is_home)
 			VALUES(?,?,?,?,?,?,?,?,?)
@@ -1246,7 +1448,7 @@ func backlinksHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if docID.String == "" {
-			if path, err := docPathFromSlug(slug); err == nil {
+			if path, err := docPathFromSlug(slug, "published"); err == nil {
 				if content, err := os.ReadFile(path); err == nil {
 					meta, _ := parseDocumentMetadata(string(content))
 					docID.String = meta.ID
@@ -1308,10 +1510,20 @@ func parseStatusParam(raw string) []string {
 	return uniqueStrings(out)
 }
 
+func containsStatus(list []string, target string) bool {
+	for _, item := range list {
+		if strings.EqualFold(item, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func searchStatuses(r *http.Request, raw string) []string {
 	allowed := map[string]struct{}{
 		"published": {},
 		"unlisted":  {},
+		"draft":     {},
 	}
 	statuses := parseStatusParam(raw)
 	if len(statuses) == 0 {
@@ -1336,7 +1548,7 @@ func cleanPrefix(raw string) string {
 	return prefix
 }
 
-func buildDocumentQuery(statuses []string, pathPrefix string) (string, []any) {
+func buildDocumentQuery(statuses []string, pathPrefix, owner string) (string, []any) {
 	parts := []string{"SELECT doc_id,slug,title,status,created_at,updated_at,parent_slug,is_start_page,is_pinned,is_home,path,links,owner FROM documents"}
 	var filters []string
 	var args []any
@@ -1350,6 +1562,10 @@ func buildDocumentQuery(statuses []string, pathPrefix string) (string, []any) {
 		filters = append(filters, "slug LIKE ?")
 		args = append(args, pathPrefix+"%")
 	}
+	if owner = strings.TrimSpace(owner); owner != "" {
+		filters = append(filters, "owner = ?")
+		args = append(args, owner)
+	}
 	if len(filters) > 0 {
 		parts = append(parts, "WHERE "+strings.Join(filters, " AND "))
 	}
@@ -1362,7 +1578,7 @@ func ensureDocumentMetadata(content string, meta *DocumentMetadata, user *auth.U
 	hasStatus := block != "" && frontMatterHasKey(block, "status")
 	if meta.Status == "" {
 		if hasStatus {
-			return content, fmt.Errorf("Status must be published or unlisted")
+			return content, fmt.Errorf("Status must be published, unlisted, or draft")
 		}
 		meta.Status = "published"
 		if updated, changed := setFrontMatterField(content, "status", meta.Status); changed {
@@ -1421,8 +1637,51 @@ func cleanSlugParam(raw string) string {
 	return s
 }
 
-func docIndexPathFromSlug(slug string) (string, error) {
-	root, err := docsRootDir()
+
+func findDocumentPath(slug string, preferIndexForNew bool) (string, string, error) {
+	
+	statuses := []string{"published", "unlisted", "draft"}
+	for _, status := range statuses {
+		path, err := docPathFromSlugWithHint(slug, status, preferIndexForNew)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			return path, status, nil
+		}
+	}
+	
+	path, err := docPathFromSlugWithHint(slug, "published", preferIndexForNew)
+	return path, "published", err
+}
+
+
+func moveDocumentToStatus(oldPath string, slug string, newStatus string, preferIndex bool) (string, error) {
+	newPath, err := docPathFromSlugWithHint(slug, newStatus, preferIndex)
+	if err != nil {
+		return "", err
+	}
+	if oldPath == newPath {
+		return newPath, nil
+	}
+	
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return "", err
+	}
+	
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return "", err
+	}
+	
+	oldDir := filepath.Dir(oldPath)
+	if entries, err := os.ReadDir(oldDir); err == nil && len(entries) == 0 {
+		_ = os.Remove(oldDir)
+	}
+	return newPath, nil
+}
+
+func docIndexPathFromSlug(slug string, status string) (string, error) {
+	root, err := docsRootDir(status)
 	if err != nil {
 		return "", err
 	}
@@ -1449,8 +1708,8 @@ func docIndexPathFromSlug(slug string) (string, error) {
 	return abs, nil
 }
 
-func docPathFromSlugWithHint(slug string, preferIndexForNew bool) (string, error) {
-	root, err := docsRootDir()
+func docPathFromSlugWithHint(slug string, status string, preferIndexForNew bool) (string, error) {
+	root, err := docsRootDir(status)
 	if err != nil {
 		return "", err
 	}
@@ -1471,24 +1730,24 @@ func docPathFromSlugWithHint(slug string, preferIndexForNew bool) (string, error
 	indexCandidate := filepath.Join(root, rel, "_index.md")
 
 	if _, err := os.Stat(fileCandidate); err == nil {
-		return absoluteDocPath(fileCandidate)
+		return absoluteDocPath(fileCandidate, status)
 	}
 	if _, err := os.Stat(indexCandidate); err == nil {
-		return absoluteDocPath(indexCandidate)
+		return absoluteDocPath(indexCandidate, status)
 	}
 
 	if preferIndexForNew {
-		return absoluteDocPath(indexCandidate)
+		return absoluteDocPath(indexCandidate, status)
 	}
-	return absoluteDocPath(fileCandidate)
+	return absoluteDocPath(fileCandidate, status)
 }
 
-func docPathFromSlug(slug string) (string, error) {
-	return docPathFromSlugWithHint(slug, false)
+func docPathFromSlug(slug string, status string) (string, error) {
+	return docPathFromSlugWithHint(slug, status, false)
 }
 
 func DocPathFromSlug(slug string) (string, error) {
-	return docPathFromSlug(slug)
+	return docPathFromSlug(slug, "published")
 }
 func isReservedSlug(slug string) bool {
 	s := cleanSlugParam(slug)
@@ -1505,8 +1764,8 @@ func isReservedSlug(slug string) bool {
 	}
 }
 
-func docPathForSlug(slug string, asHub bool) (string, error) {
-	root, err := docsRootDir()
+func docPathForSlug(slug string, status string, asHub bool) (string, error) {
+	root, err := docsRootDir(status)
 	if err != nil {
 		return "", err
 	}
@@ -1527,11 +1786,11 @@ func docPathForSlug(slug string, asHub bool) (string, error) {
 			candidate += ".md"
 		}
 	}
-	return absoluteDocPath(candidate)
+	return absoluteDocPath(candidate, status)
 }
 
-func absoluteDocPath(candidate string) (string, error) {
-	root, err := docsRootDir()
+func absoluteDocPath(candidate string, status string) (string, error) {
+	root, err := docsRootDir(status)
 	if err != nil {
 		return "", err
 	}
@@ -1549,13 +1808,10 @@ func absoluteDocPath(candidate string) (string, error) {
 	return absCandidate, nil
 }
 
-func docsRootDir() (string, error) {
-	root := contentpath.DocsRoot
+func docsRootDir(status string) (string, error) {
+	root := contentpath.GetRootForStatus(status)
 	if root == "" {
-		if contentpath.ContentRoot == "" {
-			return "", fmt.Errorf("docs root not configured")
-		}
-		root = filepath.Join(contentpath.ContentRoot, "docs")
+		return "", fmt.Errorf("docs root not configured")
 	}
 	return root, nil
 }

@@ -18,6 +18,7 @@ const DocumentTreeItem = React.memo(
     onRemoveStartPage,
     onTogglePin,
     onToggleHome,
+    onSetStatus,
     onDelete,
     canDelete,
     onMove,
@@ -63,6 +64,11 @@ const DocumentTreeItem = React.memo(
     const handleToggleHome = wrapAction(() =>
       onToggleHome?.(node.slug, !node.is_home)
     );
+    const handleToggleUnlisted = wrapAction(() => {
+      const current = (node.status || "").toLowerCase();
+      const nextStatus = current === "unlisted" ? "published" : "unlisted";
+      onSetStatus?.(node.slug, nextStatus);
+    });
     const handleDelete = wrapAction(() => onDelete?.(node.slug));
     const handleMove = wrapAction(() => onMove?.(node));
     const handleRowClick = (ev) => {
@@ -80,7 +86,6 @@ const DocumentTreeItem = React.memo(
       }
     };
     const normalizedStatus = normalizeStatus((node.status || "").toLowerCase());
-    const showStatusDot = normalizedStatus === "unlisted";
     return (
       <li>
         <div
@@ -128,12 +133,6 @@ const DocumentTreeItem = React.memo(
             </span>
             <span className="doc-tree-title-text">
               {node.title || node.slug}
-              {showStatusDot && (
-                <span
-                  className={`doc-tree-status-dot doc-tree-status-dot-${normalizedStatus}`}
-                  aria-label={normalizedStatus}
-                />
-              )}
             </span>
             {originLabel && (
               <span className="doc-tree-origin">{originLabel}</span>
@@ -168,6 +167,7 @@ const DocumentTreeItem = React.memo(
                 canDelete={canDelete}
                 onSetStartPage={handleSetStart}
                 onToggleHome={handleToggleHome}
+                onToggleUnlisted={handleToggleUnlisted}
                 onTogglePin={handleTogglePin}
                 onDelete={handleDelete}
                 onMove={handleMove}

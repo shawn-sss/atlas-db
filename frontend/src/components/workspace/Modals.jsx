@@ -100,6 +100,95 @@ export default function WorkspaceModals({
     onClose: closeHistoryDiff,
   } = historyDiff;
 
+  const diffSummary = React.useMemo(() => {
+    const segments = data?.segments || [];
+    const rows = [];
+    let oldLine = 1;
+    let newLine = 1;
+    let added = 0;
+    let removed = 0;
+    let current = {
+      parts: [],
+      hasOld: false,
+      hasNew: false,
+    };
+
+    const pushLine = () => {
+      if (current.parts.length === 0) {
+        return;
+      }
+      const hasInsert = current.parts.some((part) => part.type === "insert");
+      const hasDelete = current.parts.some((part) => part.type === "delete");
+      let lineType = "equal";
+      if (hasInsert && hasDelete) {
+        lineType = "change";
+      } else if (hasInsert) {
+        lineType = "insert";
+      } else if (hasDelete) {
+        lineType = "delete";
+      }
+
+      rows.push({
+        key: `${rows.length}-${oldLine}-${newLine}`,
+        type: lineType,
+        oldLine: current.hasOld ? oldLine : null,
+        newLine: current.hasNew ? newLine : null,
+        parts: current.parts,
+      });
+
+      if (current.hasOld) {
+        oldLine += 1;
+      }
+      if (current.hasNew) {
+        newLine += 1;
+      }
+      if (lineType === "insert") {
+        added += 1;
+      } else if (lineType === "delete") {
+        removed += 1;
+      } else if (lineType === "change") {
+        added += 1;
+        removed += 1;
+      }
+
+      current = { parts: [], hasOld: false, hasNew: false };
+    };
+
+    segments.forEach((segment, segmentIndex) => {
+      const text = segment?.text ?? "";
+      if (text.length === 0) {
+        return;
+      }
+      const lines = text.split("\n");
+      lines.forEach((line, lineIndex) => {
+        const isLast = lineIndex === lines.length - 1;
+        const isNewline = !isLast;
+        const shouldAddBlank = line === "" && isNewline;
+        if (line !== "" || shouldAddBlank) {
+          current.parts.push({
+            type: segment.type,
+            text: line,
+          });
+          if (segment.type === "equal" || segment.type === "delete") {
+            current.hasOld = true;
+          }
+          if (segment.type === "equal" || segment.type === "insert") {
+            current.hasNew = true;
+          }
+        }
+        if (isNewline) {
+          pushLine();
+        }
+      });
+    });
+
+    if (current.parts.length > 0) {
+      pushLine();
+    }
+
+    return { rows, added, removed };
+  }, [data]);
+
   return (
     <>
       {showNewModal && (
@@ -279,20 +368,75 @@ export default function WorkspaceModals({
             ) : (
               <>
                 <div className="history-diff-status">
-                  <div>
-                    {data?.saved_at
-                      ? `Saved at ${new Date(data.saved_at).toLocaleString()}`
-                      : "Saved revision"}
+                  <div className="history-diff-meta">
+                    <div>
+                      {data?.saved_at
+                        ? `Saved at ${new Date(
+                            data.saved_at
+                          ).toLocaleString()}`
+                        : "Saved revision"}
+                    </div>
+                    {data?.note && <div className="muted">{data.note}</div>}
                   </div>
-                  {data?.note && <div className="muted">{data.note}</div>}
+                  <div className="history-diff-counts">
+                    <span className="history-diff-count history-diff-insert">
+                      +{diffSummary.added}
+                    </span>
+                    <span className="history-diff-count history-diff-delete">
+                      -{diffSummary.removed}
+                    </span>
+                  </div>
                 </div>
                 <div className="history-diff-lines">
-                  {data?.segments?.map((segment, idx) => (
-                    <div
-                      key={`${segment.type}-${idx}`}
-                      className={`history-diff-segment history-diff-${segment.type}`}
+                  <div className="history-diff-header">
+                    <span className="history-diff-header-gutter">
+                      <span className="history-diff-header-label">
+                        Original
+                      </span>
+                      <span className="history-diff-header-label">
+                        Updated
+                      </span>
+                    </span>
+                    <span
+                      className="history-diff-header-marker"
+                      aria-hidden="true"
                     >
-                      <span>{segment.text}</span>
+                      {" "}
+                    </span>
+                    <span className="history-diff-header-label">Line</span>
+                  </div>
+                  {diffSummary.rows.map((row) => (
+                    <div
+                      key={row.key}
+                      className={`history-diff-line history-diff-${row.type}`}
+                    >
+                      <span className="history-diff-gutter">
+                        <span className="history-diff-line-num">
+                          {row.oldLine ?? ""}
+                        </span>
+                        <span className="history-diff-line-num">
+                          {row.newLine ?? ""}
+                        </span>
+                      </span>
+                      <span className="history-diff-marker">
+                        {row.type === "insert"
+                          ? "+"
+                          : row.type === "delete"
+                          ? "-"
+                          : row.type === "change"
+                          ? "~"
+                          : " "}
+                      </span>
+                      <span className="history-diff-text">
+                        {row.parts.map((part, partIndex) => (
+                          <span
+                            key={`${row.key}-part-${partIndex}`}
+                            className={`history-diff-fragment history-diff-fragment-${part.type}`}
+                          >
+                            {part.text === "" ? " " : part.text}
+                          </span>
+                        ))}
+                      </span>
                     </div>
                   ))}
                 </div>

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"atlas/internal/contentpath"
+	"atlas/internal/random"
 )
 
 type seedDoc struct {
@@ -26,9 +27,9 @@ func seedDefaultStructureIfNeeded(db *sql.DB) []string {
 		return nil
 	}
 
-	root := contentpath.DocsRoot
+	root := contentpath.PublishedRoot
 	if root == "" {
-		root = filepath.Join(contentpath.ContentRoot, "docs")
+		return nil
 	}
 	_ = os.MkdirAll(root, 0o755)
 
@@ -195,17 +196,13 @@ func seededFrontMatter(slug string) string {
 	if slug == "" {
 		slug = "home"
 	}
-	return fmt.Sprintf("---\nstatus: published\nowner: owner\nid: %s\n---\n\n", sanitizeSeedID(slug))
+	return fmt.Sprintf("---\nstatus: published\nowner: owner\nid: %s\n---\n\n", seedDocID(slug))
 }
 
-func sanitizeSeedID(raw string) string {
-	clean := strings.TrimSpace(raw)
-	clean = strings.Trim(clean, "/")
-	clean = strings.ReplaceAll(clean, "/", "-")
-	clean = strings.ReplaceAll(clean, "\\", "-")
-	clean = strings.ReplaceAll(clean, " ", "-")
+func seedDocID(slug string) string {
+	clean := strings.TrimSpace(slug)
 	if clean == "" {
 		clean = "home"
 	}
-	return fmt.Sprintf("seed-%s", clean)
+	return "doc-" + random.GenerateToken(12)
 }

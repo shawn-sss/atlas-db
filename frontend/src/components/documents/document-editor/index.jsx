@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ROUTES from "../../../api/routes";
 import { renderMarkdown } from "../../../utils/markdown";
 import { normalizeStatus } from "../../../utils/formatters";
 import { cleanSlug, slugify } from "../../../utils/slug";
+import { slugToPath, slugToSegments } from "../../../utils/router";
 import ModalShell from "../../ui/modals";
 import DocumentSearch from "../document-search";
 import { parseContent, parseDualPaneContent } from "./editor-helpers";
@@ -20,7 +21,7 @@ import {
   IconHr,
 } from "./editor-icons";
 
-const STATUS_OPTIONS = ["published", "unlisted"];
+const STATUS_OPTIONS = ["draft", "published", "unlisted"];
 
 export default function Editor({
   slug,
@@ -37,7 +38,11 @@ export default function Editor({
   metadata = null,
   currentUser = null,
   parentSlug = "",
+  parentOptions = [],
+  onParentSlugChange,
+  onDraftAutoSaved,
 }) {
+  const isEdit = !!slug;
   const [titleText, setTitleText] = useState(slug || "");
   const [bodyText, setBodyText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -63,23 +68,45 @@ export default function Editor({
   const [uploadProgress, setUploadProgress] = useState(0);
   const uploadXhrRef = useRef(null);
   const saveRef = useRef(null);
+  const draftSaveTimerRef = useRef(null);
+  const lastDraftSavedRef = useRef(null);
+  const draftSlugRef = useRef(null);
   const [overwritePrompt, setOverwritePrompt] = useState(false);
   const [overwriteMessage] = useState("");
   const [showDraftModal, setShowDraftModal] = useState(false);
-  const [metaStatus, setMetaStatus] = useState(
-    normalizeStatus(metadata?.status)
-  );
+  const [metaStatus, setMetaStatus] = useState(() => {
+    const normalized = normalizeStatus(metadata?.status);
+    if (normalized) return normalized;
+    return isEdit ? "published" : "draft";
+  });
   const [metaCreatedBy, setMetaCreatedBy] = useState(
     (metadata?.owner || currentUser?.username || "").trim()
   );
 
   const derivedSlug = useMemo(() => slugify(titleText), [titleText]);
-  const isEdit = !!slug;
+  const urlPrefix = useMemo(() => {
+    if (isEdit) return "/doc/";
+    const parent = (parentSlug || "").trim();
+    if (!parent) return "/doc/";
+    return `/doc/${slugToSegments(parent)}/`;
+  }, [isEdit, parentSlug]);
   const saveSlug = useMemo(() => {
     if (isEdit) return slug;
     if (slugInput && String(slugInput).trim() !== "") return slugify(slugInput);
     return derivedSlug;
   }, [isEdit, slug, slugInput, derivedSlug]);
+  const normalizedEditSlug = useMemo(() => {
+    if (!isEdit) return "";
+    const raw = (slugInput || "").trim();
+    if (!raw) return "";
+    const cleaned = slugify(raw);
+    if (cleaned.includes("/")) return cleaned;
+    const current = cleanSlug(slug || "");
+    const idx = current.lastIndexOf("/");
+    if (idx <= 0) return cleaned;
+    const parent = current.slice(0, idx);
+    return parent ? `${parent}/${cleaned}` : cleaned;
+  }, [isEdit, slugInput, slug]);
   const fullSlug = useMemo(() => {
     if (isEdit) return slug || "";
     if (!saveSlug) return "";
@@ -134,6 +161,8 @@ export default function Editor({
     setDraftRestored(false);
     restoredDraftKeyRef.current = null;
     lastSavedContentRef.current = null;
+    draftSlugRef.current = null;
+    lastDraftSavedRef.current = null;
     try {
       const d = localStorage.getItem(`atlas-editor-draft:${nextSlug}`);
       if (d && d !== (initial || "")) setStagedDraft(d);
@@ -158,9 +187,10 @@ export default function Editor({
   }, [initial, slug, initialFolder, isEdit]);
 
   useEffect(() => {
-    setMetaStatus(normalizeStatus(metadata?.status));
+    const normalized = normalizeStatus(metadata?.status);
+    setMetaStatus(normalized || (isEdit ? "published" : "draft"));
     setMetaCreatedBy((metadata?.owner || currentUser?.username || "").trim());
-  }, [metadata, currentUser?.username]);
+  }, [metadata, currentUser?.username, isEdit]);
 
   useEffect(() => {
     if (onSlugChange) onSlugChange(saveSlug);
@@ -236,10 +266,15 @@ export default function Editor({
   }, [linkables, documentQuery]);
 
   const metadataReady = Boolean(metaStatus && metaCreatedBy.trim());
-
+  const buildFrontMatter = (statusValue, ownerValue) => {
+    const normalizedStatus = normalizeStatus(statusValue);
+    const normalizedOwner = (ownerValue || "").trim();
+    if (!normalizedStatus || !normalizedOwner) return "";
+    return `---\nstatus: ${normalizedStatus}\nowner: ${normalizedOwner}\n---\n\n`;
+  };
   const frontMatter = useMemo(() => {
     if (!metadataReady) return "";
-    return `---\nstatus: ${metaStatus}\nowner: ${metaCreatedBy}\n---\n\n`;
+    return buildFrontMatter(metaStatus, metaCreatedBy);
   }, [metadataReady, metaStatus, metaCreatedBy]);
 
   const safeRemoveLocalStorageKey = (key, label) => {
@@ -796,7 +831,7 @@ export default function Editor({
         credentials: "include",
       });
       console.log("[slugExists] GET response", res.status, res.ok);
-      const exists = res.ok; // 200‑299 means the page exists
+      const exists = res.ok; 
       console.log("[slugExists] final exists", exists);
       return exists;
     } catch (e) {
@@ -836,6 +871,92 @@ export default function Editor({
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     };
   }, [fullContent, draftKey, initial]);
+
+  const hasSlugSeed = Boolean(
+    (slugInput || "").trim() || (titleText || "").trim()
+  );
+  const shouldAutoSaveDraft = !isEdit && fullContent.trim() !== "";
+  const ensureDraftSlug = useCallback(
+    (ownerValue) => {
+      if (draftSlugRef.current) return draftSlugRef.current;
+      const ownerSlug = slugify(ownerValue || "user");
+      const token = `${Date.now().toString(36)}${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      const next = `drafts/${ownerSlug}/${token}`;
+      draftSlugRef.current = next;
+      return next;
+    },
+    []
+  );
+  const saveDraftNow = useCallback(async () => {
+    if (!shouldAutoSaveDraft) return;
+    if (fullContent === lastDraftSavedRef.current) return;
+    const ownerValue = (metaCreatedBy || currentUser?.username || "").trim();
+    const draftFrontMatter = buildFrontMatter("draft", ownerValue);
+    if (!draftFrontMatter) return;
+    let targetSlug = hasSlugSeed ? fullSlug : ensureDraftSlug(ownerValue);
+    let renameTo = "";
+    if (hasSlugSeed && draftSlugRef.current && draftSlugRef.current !== fullSlug) {
+      renameTo = fullSlug;
+      targetSlug = draftSlugRef.current;
+    }
+    const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
+    let url = endpointPrefix + encodeURI(baseSlug);
+    if (renameTo) {
+      url += `?rename_to=${encodeURIComponent(renameTo)}`;
+    }
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        body: `${draftFrontMatter}${fullContent}`,
+      });
+      if (res.ok) {
+        let nextSlug = renameTo || targetSlug;
+        try {
+          const data = await res.json().catch(() => null);
+          if (data && data.slug) nextSlug = data.slug;
+        } catch (e) {
+          console.warn("[Editor] draft save response parse", e);
+        }
+        draftSlugRef.current = nextSlug;
+        lastDraftSavedRef.current = fullContent;
+        if (onDraftAutoSaved) {
+          onDraftAutoSaved({ slug: nextSlug, status: "draft" });
+        }
+      }
+    } catch (e) {
+      console.warn("[Editor] draft autosave failed", e);
+    }
+  }, [
+    shouldAutoSaveDraft,
+    fullContent,
+    hasSlugSeed,
+    fullSlug,
+    metaCreatedBy,
+    currentUser?.username,
+    buildFrontMatter,
+    folderMode,
+    ensureDraftSlug,
+    endpointPrefix,
+    onDraftAutoSaved,
+  ]);
+
+  useEffect(() => {
+    lastDraftSavedRef.current = null;
+  }, [fullSlug]);
+
+  useEffect(() => {
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    if (!shouldAutoSaveDraft) return;
+    draftSaveTimerRef.current = setTimeout(() => {
+      saveDraftNow();
+    }, 1200);
+    return () => {
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    };
+  }, [saveDraftNow, shouldAutoSaveDraft, fullContent]);
 
   const restoreDraft = () => {
     if (!stagedDraft) return;
@@ -884,6 +1005,7 @@ export default function Editor({
           <button
             className="btn btn-ghost"
             onClick={() => {
+              saveDraftNow();
               safeRemoveLocalStorageKey(draftKey, "back button");
               onCancel && onCancel();
             }}
@@ -931,8 +1053,8 @@ export default function Editor({
             className="btn btn-primary btn-sm editor-topbar-action"
             onClick={async () => {
               if (isEdit) {
-                const targetSlug = slugify(slugInput || "");
-                if (targetSlug && targetSlug !== slug) {
+                const targetSlug = normalizedEditSlug;
+                if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
                   try {
                     const checkEndpoint =
                       endpointPrefix + encodeURI(targetSlug);
@@ -972,32 +1094,53 @@ export default function Editor({
       </div>
       <div className="editor-topbar">
         <div className="editor-topbar-header">
-          <div className="editor-type-strip">
-            <span className="editor-type-label">
-              {folderMode ? "Folder" : "Document"}
-            </span>
-            <button
-              className="btn btn-ghost btn-sm"
-              type="button"
-              onClick={() => setFolderMode((prev) => !prev)}
-            >
-              Try as {folderMode ? "Document" : "Folder"}
-            </button>
-          </div>
-          <label className="field editor-status-field">
-            <span>Status</span>
+          <label className="field editor-type-field">
             <select
               className="input"
-              value={metaStatus}
-              onChange={(e) => setMetaStatus(e.target.value)}
+              value={folderMode ? "folder" : "file"}
+              onChange={(e) => setFolderMode(e.target.value === "folder")}
             >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt[0].toUpperCase() + opt.slice(1)}
-                </option>
-              ))}
+              <option value="file">File</option>
+              <option value="folder">Folder</option>
             </select>
           </label>
+          <div className="editor-topbar-meta">
+            {!isEdit && parentOptions && parentOptions.length ? (
+              <label className="field editor-location-field">
+                <span>Location</span>
+                <select
+                  className="input"
+                  value={parentSlug}
+                  onChange={(e) =>
+                    onParentSlugChange && onParentSlugChange(e.target.value)
+                  }
+                >
+                  {parentOptions.map((opt) => (
+                    <option
+                      key={opt.slug || "__root__"}
+                      value={opt.slug || ""}
+                    >
+                      {opt.label || opt.slug || "Root"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label className="field editor-status-field">
+              <span>Status</span>
+              <select
+                className="input"
+                value={metaStatus}
+                onChange={(e) => setMetaStatus(e.target.value)}
+              >
+                {STATUS_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt[0].toUpperCase() + opt.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
         <div className="editor-topbar-main">
           <label className="field editor-title-field">
@@ -1012,6 +1155,7 @@ export default function Editor({
           <label className="field editor-slug-field">
             <span>URL</span>
             <div className="editor-slug-input">
+              <span className="editor-slug-prefix">{urlPrefix}</span>
               <input
                 className="input"
                 value={slugInput}
@@ -1453,8 +1597,9 @@ export default function Editor({
         >
           <div className="stack">
             <div className="muted">
-              You&apos;re changing this page&apos;s URL from /{slug} to /
-              {renameTarget}. Links/bookmarks to the old URL may stop working.
+              You&apos;re changing this page&apos;s URL from {slugToPath(slug)} to{" "}
+              {slugToPath(renameTarget)}. Links/bookmarks to the old URL may
+              stop working.
             </div>
           </div>
         </ModalShell>

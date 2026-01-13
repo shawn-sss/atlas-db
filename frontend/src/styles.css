@@ -1,28 +1,28 @@
 @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 :root {
-  /* Brand palette — earthy green + water blue (darker, modern) */
-  --color-primary: #0b5f7a; /* water blue */
+  
+  --color-primary: #0b5f7a; 
   --color-primary-dark: #083f52;
-  --color-secondary: #2a6a4b; /* earthy green */
+  --color-secondary: #2a6a4b; 
   --color-secondary-dark: #214f3a;
-  --color-accent: #2ea7c5; /* bright water highlight */
+  --color-accent: #2ea7c5; 
   --color-accent-soft: #a6e3eb;
 
-  /* Neutrals — deep, slightly warm-green charcoal */
+  
   --bg: #050a0d;
   --bg-alt: #071217;
   --bg-fill: linear-gradient(180deg, #070b0a 0%, #081512 55%, #070b0a 100%);
 
-  /* Surfaces (OPAQUE – no “glass”) */
-  --panel: #0b1f25; /* cards / panels */
-  --panel-soft: #0f2a32; /* inputs / tabs */
+  
+  --panel: #0b1f25; 
+  --panel-soft: #0f2a32; 
   --surface: #0d232a;
-  --surface-muted: #12313a; /* hover / subtle contrast */
-  --surface-glass: #0f1d1a; /* kept for compatibility */
-  --glass-border: #193a44; /* kept for compatibility */
+  --surface-muted: #12313a; 
+  --surface-glass: #0f1d1a; 
+  --glass-border: #193a44; 
 
-  /* App background — subtle tint only (not glass) */
+  
   --app-backdrop: radial-gradient(
       circle at 16% 20%,
       rgba(11, 95, 122, 0.3),
@@ -43,13 +43,13 @@
     ),
     linear-gradient(180deg, #050a0d 0%, #071217 55%, #050a0d 100%);
 
-  /* Typography / borders */
+  
   --text: #f3f7f6;
   --muted: #9ab2b7;
   --border: #193a44;
   --border-strong: #21505c;
 
-  /* Shadows & rings */
+  
   --shadow-soft: 0 14px 34px rgba(0, 0, 0, 0.45);
   --shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
   --glow: 0 0 28px rgba(46, 167, 197, 0.22);
@@ -67,7 +67,7 @@
 
   --radius: 16px;
 
-  /* Gradients (used sparingly) */
+  
   --gradient-surface: linear-gradient(180deg, #102a32, #0b1f25);
   --gradient-highlight: linear-gradient(
     135deg,
@@ -88,7 +88,7 @@
   --accent-2: var(--color-secondary);
   --accent-3: var(--color-accent);
 
-  /* Status */
+  
   --danger: #f87171;
   --info-bg: #081a20;
   --success-bg: #081d15;
@@ -96,7 +96,7 @@
   --warning: #fbbf24;
   --warning-bg: #221b0b;
 
-  /* Spacing */
+  
   --space-xxs: 4px;
   --space-xs: 6px;
   --space-sm: 8px;
@@ -457,7 +457,7 @@ code {
   flex-direction: column;
   gap: var(--space-lg);
 }
-/* Ensure CodeMirror editor area matches app theme immediately to avoid white flash */
+
 .editor-body,
 .editor-pane,
 .editor-surface,
@@ -715,7 +715,7 @@ code {
   }
 }
 
-/* Sidebar */
+
 .sidebar {
   width: 320px;
   padding: var(--space-lg);
@@ -892,11 +892,13 @@ select.input {
   letter-spacing: 0.01em;
   max-height: 260px;
   overflow-y: auto;
+  cursor: pointer;
 }
 select.input option {
   background: var(--panel);
   color: var(--text);
   font-weight: 600;
+  cursor: pointer;
 }
 
 .sidebar-actions {
@@ -961,7 +963,7 @@ select.input option {
   padding: 10px 4px;
 }
 
-/* Main */
+
 .main {
   flex: 1;
   padding: 20px;
@@ -1087,7 +1089,7 @@ select.input option {
   display: block;
   white-space: pre;
 }
-/* Avoid double background/border when a <code> appears inside a fenced/indented block */
+
 .md-code code {
   background: transparent;
   border: 0;
@@ -1097,7 +1099,7 @@ select.input option {
   height: 10px;
 }
 
-/* Center the auth/login panel and constrain its width */
+
 .start-inner .start-body {
   align-items: center;
   justify-content: center;
@@ -1111,7 +1113,7 @@ select.input option {
   padding: var(--space-md) 0;
 }
 .auth-card {
-  /* login card */
+  
   max-width: 520px;
   width: 100%;
 }
@@ -1126,7 +1128,7 @@ select.input option {
   }
 }
 
-/* Small hero above the auth card */
+
 .auth-hero {
   text-align: center;
   max-width: 520px;
@@ -1144,7 +1146,7 @@ select.input option {
   margin-bottom: 12px;
 }
 
-/* Slightly tighten spacing between hero and card */
+
 .start-auth-panel {
   gap: 10px;
   align-items: center;
@@ -1167,7 +1169,7 @@ select.input option {
   font-size: 12px;
 }
 
-/* tables and blockquotes */
+
 .md-table {
   width: 100%;
   border-collapse: collapse;
@@ -1191,7 +1193,7 @@ select.input option {
   background: var(--panel-soft);
 }
 
-/* toolbar tweaks - improved spacing and compact button styles */
+
 .editor-toolbar-shell {
   position: sticky;
   top: 0;
@@ -1258,7 +1260,7 @@ select.input option {
   border-radius: 999px;
 }
 
-/* Toolbar grouping */
+
 .editor-toolbar .toolbar-group {
   display: flex;
   gap: 8px;
@@ -1295,7 +1297,7 @@ select.input option {
   flex: none;
 }
 
-/* Editor */
+
 .editor {
   border: none;
   padding: 0;
@@ -1391,6 +1393,20 @@ select.input option {
   width: 100%;
   flex-wrap: wrap;
 }
+.editor-topbar-header select.input {
+  padding-right: calc(var(--space-md) + 18px);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%23cfd7e6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 8px;
+}
+.editor-topbar-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
 .editor-title-field {
   flex: 1 1 320px;
   min-width: 220px;
@@ -1410,6 +1426,11 @@ select.input option {
   border-radius: 12px;
   border: 1px solid var(--border-strong);
   background: var(--panel-soft);
+}
+.editor-slug-prefix {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
 }
 .editor-slug-input .input {
   border: none;
@@ -1493,17 +1514,45 @@ select.input option {
   margin-top: 6px;
 }
 .editor-status-field {
-  min-width: 180px;
-  width: 200px;
+  min-width: 0;
+  width: max-content;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.editor-type-field {
+  min-width: 0;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.editor-location-field {
+  min-width: 0;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.editor-type-field span {
+  display: inline-flex;
+  margin-bottom: 0;
 }
 .editor-status-field span {
   display: inline-flex;
   margin-bottom: 0;
 }
+.editor-location-field span {
+  display: inline-flex;
+  margin-bottom: 0;
+}
+.editor-type-field .input {
+  width: 100%;
+}
 .editor-status-field .input {
+  width: 100%;
+}
+.editor-location-field .input {
   width: 100%;
 }
 .editor-toolbar {
@@ -1699,7 +1748,7 @@ select.input option {
   margin-left: 8px;
 }
 
-/* document-search (replacement for wiki-palette) */
+
 .document-search {
   position: absolute;
   top: var(--space-sm);
@@ -1767,7 +1816,7 @@ select.input option {
   border-color: var(--tone-secondary);
 }
 
-/* Components */
+
 .card {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1934,7 +1983,7 @@ select.input option {
   line-height: 1.5;
 }
 
-/* Error toast bubble shown in bottom-right for global errors */
+
 .error-toast {
   position: fixed;
   right: 18px;
@@ -1964,7 +2013,7 @@ select.input option {
   background: rgba(255, 255, 255, 0.06);
 }
 
-/* Welcome */
+
 .welcome-shell {
   min-height: 100vh;
   display: flex;
@@ -1997,7 +2046,7 @@ select.input option {
   margin: 0 0 16px 0;
 }
 
-/* Modal */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -2297,40 +2346,141 @@ select.input option {
 .history-diff-status {
   font-size: 13px;
   margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.history-diff-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.history-diff-counts {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+}
+.history-diff-count {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
 }
 .history-diff-lines {
-  max-height: 360px;
+  max-height: 420px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px;
+  padding: 0;
   background: var(--surface);
 }
-.history-diff-segment {
-  padding: 6px 8px;
-  border-radius: 8px;
-  font-family: var(--font-mono);
+.history-diff-header {
+  display: grid;
+  grid-template-columns: 72px 22px 1fr;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.history-diff-header-gutter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  justify-items: end;
+}
+.history-diff-header-label {
+  justify-self: end;
+}
+.history-diff-header > .history-diff-header-label {
+  justify-self: start;
+}
+.history-diff-header-marker {
+  color: transparent;
+}
+.history-diff-line {
+  display: grid;
+  grid-template-columns: 72px 22px 1fr;
+  gap: 8px;
+  padding: 6px 12px;
+  align-items: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.history-diff-line:nth-of-type(odd) {
+  background: rgba(7, 18, 23, 0.35);
+}
+.history-diff-gutter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.history-diff-line-num {
+  min-width: 0;
+}
+.history-diff-marker {
+  color: var(--muted);
+  text-align: center;
+}
+.history-diff-text {
   white-space: pre-wrap;
-  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.history-diff-fragment {
+  padding: 0 1px;
+  border-radius: 4px;
+}
+.history-diff-fragment-insert {
+  background: rgba(46, 167, 197, 0.25);
+  color: #e9fbff;
+}
+.history-diff-fragment-delete {
+  background: rgba(248, 113, 113, 0.28);
+  color: #ffe5e5;
 }
 .history-diff-equal {
-  background: var(--surface-muted);
+  background: transparent;
 }
 .history-diff-insert {
   background: linear-gradient(
     135deg,
-    rgba(46, 167, 197, 0.18),
-    rgba(42, 106, 75, 0.45)
+    rgba(46, 167, 197, 0.14),
+    rgba(42, 106, 75, 0.32)
   );
+  border-left: 3px solid rgba(46, 167, 197, 0.7);
   color: var(--text);
 }
 .history-diff-delete {
   background: linear-gradient(
     135deg,
-    rgba(239, 68, 68, 0.25),
-    rgba(248, 113, 113, 0.55)
+    rgba(239, 68, 68, 0.2),
+    rgba(248, 113, 113, 0.38)
   );
+  border-left: 3px solid rgba(248, 113, 113, 0.8);
   color: var(--danger);
+}
+.history-diff-change {
+  background: rgba(251, 191, 36, 0.08);
+  border-left: 3px solid rgba(251, 191, 36, 0.7);
+  color: var(--text);
+}
+.history-diff-line.history-diff-insert .history-diff-marker,
+.history-diff-line.history-diff-delete .history-diff-marker,
+.history-diff-line.history-diff-change .history-diff-marker {
+  color: currentColor;
 }
 .modal-new-action {
   width: min(560px, calc(100% - 48px));
@@ -2462,7 +2612,7 @@ select.input option {
   gap: 8px;
   margin-top: 12px;
 }
-/* Settings shell layout */
+
 .settings-shell {
   display: flex;
   gap: var(--space-lg);
@@ -2584,7 +2734,7 @@ select.input option {
   gap: 10px;
   align-items: center;
 }
-/* Divider between settings sections */
+
 .settings-shell .settings-divider {
   height: 1px;
   background: linear-gradient(
@@ -2593,7 +2743,7 @@ select.input option {
     var(--panel-soft),
     transparent
   );
-  margin: var(--space-xs) 0; /* previously 6px */
+  margin: var(--space-xs) 0; 
 }
 
 .history-row {
@@ -2846,6 +2996,15 @@ select.input option {
   justify-content: flex-start;
   margin-top: 4px;
 }
+.doc-section-filter {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.doc-section-filter .section-button:nth-child(2) {
+  margin-left: auto;
+}
 .doc-status-filter {
   display: flex;
   gap: 6px;
@@ -2881,7 +3040,7 @@ select.input option {
   box-shadow: 0 0 0 3px rgba(42, 106, 75, 0.35), 0 12px 30px rgba(0, 0, 0, 0.4);
 }
 
-/* Generic chip active state for clickable chips */
+
 .chip {
   transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
 }
@@ -2896,13 +3055,13 @@ select.input option {
   transform: translateY(-1px);
 }
 
-/* Section chips (Home/Library) when active */
+
 .chip-section.active {
   box-shadow: 0 16px 40px rgba(42, 106, 75, 0.45),
     0 0 0 2px rgba(42, 106, 75, 0.35);
   transform: translateY(-2px) scale(1.02);
 }
-/* Section buttons (Home / Library) - visually more prominent than status chips */
+
 .section-button {
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(11, 95, 122, 0.1);
@@ -2934,7 +3093,7 @@ select.input option {
     inset 0 -3px 0 rgba(0, 0, 0, 0.06), 0 0 0 2px rgba(42, 106, 75, 0.45);
 }
 
-/* Section chips used inline (search results) */
+
 .chip-section {
   background: linear-gradient(
     120deg,
@@ -3197,7 +3356,7 @@ select.input option {
   scrollbar-gutter: stable;
 }
 
-/* Match editor scrollbar styling for consistent theme across panes. */
+
 .doc-tree::-webkit-scrollbar,
 .doc-preview-panel .markdown-view::-webkit-scrollbar {
   width: 10px;
@@ -3220,7 +3379,7 @@ select.input option {
   scrollbar-gutter: stable;
 }
 
-/* Ensure nested lists in the document tree don't inherit browser bullets/padding. */
+
 .doc-tree ul,
 .doc-tree-children {
   list-style: none;
@@ -3348,7 +3507,7 @@ select.input option {
   justify-content: center;
 }
 
-/* Start page indicator: icon-only (no surrounding circle). */
+
 .doc-tree-start {
   display: inline-flex;
   align-items: center;
@@ -3383,8 +3542,13 @@ select.input option {
   margin-left: 4px;
   align-self: center;
 }
-.doc-tree-status-dot.unlisted {
+.doc-tree-status-dot.unlisted,
+.doc-tree-status-dot-unlisted {
   background: var(--muted);
+}
+.doc-tree-status-dot.draft,
+.doc-tree-status-dot-draft {
+  background: var(--warning);
 }
 
 .doc-tree-doc-indicator {
@@ -3427,29 +3591,6 @@ select.input option {
   border-radius: 8px;
 }
 
-.doc-tree-children-group-active .doc-tree-item {
-  background: linear-gradient(
-    135deg,
-    rgba(46, 167, 197, 0.12),
-    rgba(42, 106, 75, 0.2)
-  );
-  border-radius: 8px;
-  padding-left: 0;
-  padding-right: 0;
-}
-.doc-tree-children-group-active
-  .doc-tree-item:not(.active)
-  .doc-tree-title-text,
-.doc-tree-children-group-active .doc-tree-item:not(.active) {
-  color: var(--text);
-}
-.doc-tree-children-group-active .doc-tree-item.active {
-  background: linear-gradient(
-    135deg,
-    rgba(46, 167, 197, 0.3),
-    rgba(42, 106, 75, 0.45)
-  );
-}
 
 .doc-tree-item.active .doc-tree-start {
   color: #f7c948;
@@ -3606,8 +3747,7 @@ select.input option {
 }
 
 .doc-content-actions {
-  /* Float action buttons inside the content card so they don't
-       occupy layout space and push the preview down. */
+  
   position: absolute;
   top: var(--space-md);
   right: var(--space-md);

@@ -29,9 +29,6 @@ import { DEFAULT_APP_TITLE } from "../constants/defaults";
 import {
   SIDEBAR_PREFS_KEY_PREFIX,
   DEFAULT_SECTION_FILTER,
-  DEFAULT_STATUS_FILTER_KEYS,
-  DEFAULT_STATUS_FILTER_SET,
-  DOCUMENT_STATUS_OPTIONS,
 } from "../constants/app";
 import { buildTree } from "../utils/tree";
 import { cleanSlug, slugify, decodeSlug } from "../utils/slug";
@@ -43,6 +40,7 @@ export default function useWorkspaceSession() {
   const [user, setUser] = useState(null);
   const [documents, setDocuments] = useState([]);
   const [navNodes, setNavNodes] = useState([]);
+  const [draftNodes, setDraftNodes] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [content, setContent] = useState("");
   const [loadingDoc, setLoadingDoc] = useState(false);
@@ -51,10 +49,6 @@ export default function useWorkspaceSession() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState(null);
-  const [statusFilter, setStatusFilter] = useState(() => ({
-    published: true,
-    unlisted: false,
-  }));
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState(null);
   const [startPageSlug, setStartPageSlug] = useState(null);
@@ -113,6 +107,7 @@ export default function useWorkspaceSession() {
   const embedCacheRef = useRef(new Map());
   const embedControllersRef = useRef(new Map());
   const treeAbortRef = useRef(null);
+  const draftAbortRef = useRef(null);
   const sidebarPrefsKey = useMemo(
     () => `${SIDEBAR_PREFS_KEY_PREFIX}:${user?.username || "guest"}`,
     [user?.username]
@@ -142,7 +137,6 @@ export default function useWorkspaceSession() {
       owner: selectedDoc.owner || "",
     };
   }, [selectedDoc]);
-  const statusOptions = DOCUMENT_STATUS_OPTIONS;
   const [sectionFilter, setSectionFilter] = useState(DEFAULT_SECTION_FILTER);
   const markdownResolver = useMemo(
     () => ({
@@ -155,13 +149,13 @@ export default function useWorkspaceSession() {
   const aboutDocInfo = useMemo(() => {
     if (!selectedDoc) return null;
     const rawSlug = selectedDoc.slug || "";
-    const normalizedSlug = rawSlug.replace(/^\/+/, "");
+    const normalizedSlug = cleanSlug(rawSlug).replace(/^\/+/, "");
     const createdAtValue =
       selectedDoc.created_at || selectedDoc.createdAt || selectedDoc.saved_at;
     const updatedAtValue = selectedDoc.updated_at || selectedDoc.updatedAt;
     return {
       title: selectedDoc.title || selectedDoc.slug || "Untitled",
-      url: normalizedSlug ? `/${normalizedSlug}` : "Unknown",
+      url: normalizedSlug ? slugToPath(normalizedSlug) : "Unknown",
       status: normalizeStatus((selectedDoc.status || "").toLowerCase()),
       createdBy: selectedDoc.owner || "Unknown",
       createdAt: formatTimestamp(createdAtValue),
@@ -170,49 +164,25 @@ export default function useWorkspaceSession() {
   }, [selectedDoc]);
 
   const filteredNavNodes = useMemo(() => {
-    const activeStatus =
-      statusOptions.find((opt) => statusFilter[opt.key])?.key || null;
-    const buildSlugMap = (items) => {
-      const map = new Map();
-      items.forEach((item) => {
-        if (item?.slug) map.set(item.slug, item);
-      });
-      return map;
-    };
-    const includeAncestors = (node, map, included) => {
-      let current = node;
-      while (current?.slug) {
-        if (included.has(current.slug)) break;
-        included.add(current.slug);
-        if (!current.parent_slug) break;
-        const parent = map.get(current.parent_slug);
-        if (!parent) break;
-        current = parent;
-      }
-    };
-    const sectionFilteredNodes = (() => {
-      if (sectionFilter !== "home") return navNodes;
-      const map = buildSlugMap(navNodes);
-      const included = new Set();
-      for (const node of navNodes) {
-        if (!node?.slug || !node.is_home) continue;
-        includeAncestors(node, map, included);
-      }
-      return navNodes.filter((node) => node?.slug && included.has(node.slug));
-    })();
-    if (!activeStatus) return sectionFilteredNodes;
-    const map = buildSlugMap(sectionFilteredNodes);
-    const included = new Set();
-    for (const node of sectionFilteredNodes) {
-      if (!node?.slug) continue;
+    const source = sectionFilter === "drafts" ? draftNodes : navNodes;
+    return source.filter((node) => {
+      if (!node?.slug) return false;
       const nodeStatus = normalizeStatus((node.status || "").toLowerCase());
-      if (nodeStatus !== activeStatus) continue;
-      includeAncestors(node, map, included);
-    }
-    return sectionFilteredNodes.filter(
-      (node) => node?.slug && included.has(node.slug)
-    );
-  }, [navNodes, sectionFilter, statusFilter]);
+      if (sectionFilter === "home") {
+        return node.is_home && nodeStatus === "published";
+      }
+      if (sectionFilter === "library") {
+        return nodeStatus === "published";
+      }
+      if (sectionFilter === "unlisted") {
+        return nodeStatus === "unlisted";
+      }
+      if (sectionFilter === "drafts") {
+        return nodeStatus === "draft";
+      }
+      return nodeStatus === "published";
+    });
+  }, [draftNodes, navNodes, sectionFilter]);
 
   const tree = useMemo(
     () => buildTree(filteredNavNodes, startPageSlug),
@@ -231,6 +201,30 @@ export default function useWorkspaceSession() {
     parentPickerAction.current = null;
     setParentPickerState(null);
   }, []);
+  const locationTree = useMemo(
+    () => buildTree(navNodes, startPageSlug),
+    [navNodes, startPageSlug]
+  );
+  const locationOptions = useMemo(() => {
+    const options = [{ slug: "", label: "Root" }];
+    const walk = (nodes, depth = 0) => {
+      (nodes || []).forEach((node) => {
+        if (node?.is_folder) {
+          const indent = depth ? `${"- ".repeat(depth)}` : "";
+          const label = node.title || node.slug || "Untitled";
+          options.push({
+            slug: cleanSlug(node.slug),
+            label: `${indent}${label}`,
+          });
+        }
+        if (node?.children && node.children.length) {
+          walk(node.children, depth + 1);
+        }
+      });
+    };
+    walk(locationTree, 0);
+    return options;
+  }, [locationTree]);
   const requestParentPicker = useCallback((state, action) => {
     parentPickerAction.current = action;
     setParentPickerState(state);
@@ -256,38 +250,19 @@ export default function useWorkspaceSession() {
     setShowEditor(true);
     setEditorCreateFolderMode(isFolder);
   }, []);
+  const openNewEditor = useCallback(() => {
+    setShowNewModal(false);
+    setPendingNewDocParent("");
+    openCreateEditor(false);
+  }, [openCreateEditor]);
+  const handleEditorParentChange = useCallback((nextParent) => {
+    setPendingNewDocParent(cleanSlug(nextParent || ""));
+  }, []);
   const handleNewDocument = useCallback(() => {
     setShowNewModal(false);
-    const defaultParent = selectedDoc?.is_folder
-      ? cleanSlug(selectedDoc.slug)
-      : cleanSlug(selectedDoc?.parent_slug || "");
-    requestParentPicker(
-      {
-        title: "New document location",
-        subtitle: "Choose a folder to contain the new document.",
-        confirmLabel: "Create here",
-        initialSelection: defaultParent,
-      },
-      async (targetParent) => {
-        setPendingNewDocParent(targetParent || "");
-        openCreateEditor(false);
-        try {
-          if (typeof window !== "undefined") {
-            navigate("/editor/new", {
-              replace: true,
-              state: { editor: "new" },
-            });
-          }
-        } catch (e) {}
-      }
-    );
-  }, [
-    openCreateEditor,
-    requestParentPicker,
-    selectedDoc?.is_folder,
-    selectedDoc?.slug,
-    selectedDoc?.parent_slug,
-  ]);
+    setPendingNewDocParent("");
+    openCreateEditor(false);
+  }, [openCreateEditor]);
   const promptNewFolder = useCallback(() => {
     setShowNewModal(false);
     const defaultParent = selectedDoc?.is_folder
@@ -321,8 +296,8 @@ export default function useWorkspaceSession() {
     setPendingFolderParent("");
   }, []);
   const openNewModal = useCallback(() => {
-    setShowNewModal(true);
-  }, []);
+    openNewEditor();
+  }, [openNewEditor]);
   const closeNewModal = useCallback(() => {
     setShowNewModal(false);
   }, []);
@@ -363,6 +338,13 @@ export default function useWorkspaceSession() {
           treeAbortRef.current.abort();
         } catch (e) {
           console.warn("[workspace] abort tree fetch", e);
+        }
+      }
+      if (draftAbortRef.current) {
+        try {
+          draftAbortRef.current.abort();
+        } catch (e) {
+          console.warn("[workspace] abort draft fetch", e);
         }
       }
     };
@@ -438,8 +420,14 @@ export default function useWorkspaceSession() {
         setError("Failed to load pages (retry)");
       }
     }, 8000);
+    const statuses = ["published", "unlisted"];
+    const params = new URLSearchParams();
+    if (statuses.length) params.set("status", statuses.join(","));
+    const navUrl = params.toString()
+      ? `${ROUTES.documentsTree}?${params.toString()}`
+      : ROUTES.documentsTree;
     try {
-      const data = await apiFetch(ROUTES.documentsTree, {
+      const data = await apiFetch(navUrl, {
         signal: controller.signal,
       });
       if (treeAbortRef.current !== controller) return;
@@ -556,17 +544,95 @@ export default function useWorkspaceSession() {
       }
     }
   }, []);
+
+  const loadDrafts = useCallback(async () => {
+    if (draftAbortRef.current) {
+      draftAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    draftAbortRef.current = controller;
+    setTreeLoading(true);
+    setError(null);
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (e) {
+        console.warn("[workspace] abort draft fetch", e);
+      }
+      if (draftAbortRef.current === controller) {
+        setError("Failed to load drafts (retry)");
+      }
+    }, 8000);
+    const params = new URLSearchParams();
+    params.set("status", "draft");
+    const navUrl = `${ROUTES.documentsTree}?${params.toString()}`;
+    try {
+      const data = await apiFetch(navUrl, {
+        signal: controller.signal,
+      });
+      if (draftAbortRef.current !== controller) return;
+      const list = Array.isArray(data) ? data : [];
+      setDraftNodes(list);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (draftAbortRef.current !== controller) return;
+      setError(err.message || "Failed to load drafts (retry)");
+    } finally {
+      clearTimeout(timeoutId);
+      if (draftAbortRef.current === controller) {
+        setTreeLoading(false);
+      }
+    }
+  }, []);
+  const expandParentsForSlug = useCallback(
+    (slug) => {
+      const normalized = cleanSlug(slug || "");
+      if (!normalized) return;
+      const map = new Map();
+      navNodes.forEach((node) => {
+        if (node?.slug) map.set(cleanSlug(node.slug), node);
+      });
+      let current = map.get(normalized);
+      if (!current) return;
+      const ancestors = [];
+      const seen = new Set();
+      while (current?.parent_slug || current?.parent) {
+        const parentSlug = cleanSlug(current.parent_slug || current.parent || "");
+        if (!parentSlug || seen.has(parentSlug)) break;
+        seen.add(parentSlug);
+        const parent = map.get(parentSlug);
+        if (!parent) break;
+        ancestors.push(parent.slug);
+        current = parent;
+      }
+      if (!ancestors.length) return;
+      setCollapsedFolders((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        ancestors.forEach((ancestorSlug) => {
+          if (next[ancestorSlug] !== false) {
+            next[ancestorSlug] = false;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    },
+    [navNodes]
+  );
+  const closeEditor = useCallback(() => {
+    setShowEditor(false);
+    setEditing(false);
+    setEditorDualPane(false);
+    setEditorDraft(null);
+    setPendingNewDocParent("");
+  }, []);
   const selectedSlug = selectedDoc?.slug ? cleanSlug(selectedDoc.slug) : null;
   const handleSidebarSelect = useCallback(
     (slug) => {
       const normalizedSlug = cleanSlug(slug);
       if (!normalizedSlug) return;
-      if (showEditor) {
-        setShowEditor(false);
-        setEditing(false);
-        setEditorDualPane(false);
-        setEditorDraft(null);
-      }
+      closeEditor();
       if (normalizedSlug === selectedSlug) {
         const parentSlug = selectedDoc
           ? cleanSlug(selectedDoc.parent_slug || selectedDoc.parent || "")
@@ -595,15 +661,24 @@ export default function useWorkspaceSession() {
       }
       openDocument(normalizedSlug);
     },
-    [defaultStartPageSlug, openDocument, selectedDoc, selectedSlug, showEditor]
+    [
+      defaultStartPageSlug,
+      openDocument,
+      selectedDoc,
+      selectedSlug,
+      closeEditor,
+    ]
   );
 
   const refreshAfterSave = useCallback(
-    async (slug) => {
+    async (slug, status) => {
       await loadNav();
+      if (status === "draft") {
+        await loadDrafts();
+      }
       if (slug) openDocument(slug);
     },
-    [loadNav, openDocument]
+    [loadNav, loadDrafts, openDocument]
   );
 
   const handleFolderSave = useCallback(async () => {
@@ -728,24 +803,20 @@ export default function useWorkspaceSession() {
       event.preventDefault();
       const docId = anchor.dataset.docId;
       if (docId && docByIdMap.has(docId)) {
-        openDocument(docByIdMap.get(docId).slug);
+        const targetSlug = docByIdMap.get(docId).slug;
+        expandParentsForSlug(targetSlug);
+        openDocument(targetSlug);
         return;
       }
       const slug = anchor.dataset.wikiSlug;
       if (slug) {
-        openDocument(decodeSlug(slug));
+        const decoded = decodeSlug(slug);
+        expandParentsForSlug(decoded);
+        openDocument(decoded);
       }
     },
-    [docByIdMap, openDocument]
+    [docByIdMap, expandParentsForSlug, openDocument]
   );
-
-  const closeEditor = useCallback(() => {
-    setShowEditor(false);
-    setEditing(false);
-    setEditorDualPane(false);
-    setEditorDraft(null);
-    setPendingNewDocParent("");
-  }, []);
 
   const handleEnterDualPane = useCallback((draft) => {
     setEditorDraft(draft);
@@ -780,15 +851,25 @@ export default function useWorkspaceSession() {
 
   const handleEditorSaved = async (payload) => {
     const savedSlug = typeof payload === "string" ? payload : payload?.slug;
+    const savedStatus = typeof payload === "object" ? payload?.status : null;
     closeEditor();
     if (savedSlug) {
-      await refreshAfterSave(savedSlug);
+      await refreshAfterSave(savedSlug, savedStatus);
     } else if (selectedDoc?.slug) {
-      await refreshAfterSave(selectedDoc.slug);
+      await refreshAfterSave(selectedDoc.slug, savedStatus);
     } else {
       await loadNav();
     }
   };
+
+  const handleDraftAutoSaved = useCallback(
+    async (payload) => {
+      if (sectionFilter === "drafts") {
+        await loadDrafts();
+      }
+    },
+    [sectionFilter, loadDrafts]
+  );
 
   const handleSetStartPage = useCallback(
     async (slug) => {
@@ -998,6 +1079,59 @@ export default function useWorkspaceSession() {
     ]
   );
 
+  const handleSetStatus = useCallback(
+    async (slug, nextStatus) => {
+      if (!slug) return;
+      const normalized = normalizeStatus(nextStatus || "");
+      if (!normalized) return;
+      try {
+        const targetNode = navNodes.find((node) => node?.slug === slug);
+        if (normalized === "unlisted" && targetNode?.is_home) {
+          await handleToggleHome(slug, false);
+        }
+        await apiFetch(ROUTES.documentStatus(slug), {
+          method: "PUT",
+          body: { status: normalized },
+        });
+        const updateStatusForSlug = (node) => {
+          if (!node?.slug) return node;
+          const isTarget =
+            node.slug === slug || node.slug.startsWith(`${slug}/`);
+          if (!isTarget) return node;
+          const nextNode = { ...node, status: normalized };
+          if (normalized === "unlisted") {
+            nextNode.is_home = false;
+          }
+          return nextNode;
+        };
+        setNavNodes((prev) => prev.map(updateStatusForSlug));
+        setDocuments((prev) => prev.map(updateStatusForSlug));
+        setSelectedDoc((prev) => {
+          if (!prev?.slug) return prev;
+          if (prev.slug !== slug) return prev;
+          const nextDoc = { ...prev, status: normalized };
+          if (normalized === "unlisted") nextDoc.is_home = false;
+          return nextDoc;
+        });
+        await loadNav();
+      } catch (err) {
+        setError(err?.message || "Failed to update status");
+      }
+    },
+    [handleToggleHome, loadNav, navNodes]
+  );
+
+  const handleSectionChange = useCallback(
+    (nextSection) => {
+      if (!nextSection) return;
+      closeEditor();
+      setSelectedDoc(null);
+      setContent("");
+      setSectionFilter(nextSection);
+    },
+    [closeEditor]
+  );
+
   const handleDeleteDocument = useCallback(
     async (slug) => {
       if (!slug) return;
@@ -1006,6 +1140,11 @@ export default function useWorkspaceSession() {
         return;
       }
       const clean = cleanSlug(slug);
+      const isDraft =
+        (selectedDoc?.slug === clean &&
+          normalizeStatus((selectedDoc?.status || "").toLowerCase()) ===
+            "draft") ||
+        draftNodes.some((node) => cleanSlug(node?.slug || "") === clean);
       if (normalizedStartPageSlug && normalizedStartPageSlug === clean) {
         setError(
           "Cannot delete the active start page. Choose a different start page first."
@@ -1022,9 +1161,21 @@ export default function useWorkspaceSession() {
         setSelectedDoc(null);
         setContent("");
       }
-      await loadNav();
+      if (isDraft) {
+        await loadDrafts();
+      } else {
+        await loadNav();
+      }
     },
-    [canAdmin, loadNav, selectedDoc?.slug, normalizedStartPageSlug]
+    [
+      canAdmin,
+      draftNodes,
+      loadDrafts,
+      loadNav,
+      normalizedStartPageSlug,
+      selectedDoc?.slug,
+      selectedDoc?.status,
+    ]
   );
 
   const handleLogout = async () => {
@@ -1058,7 +1209,6 @@ export default function useWorkspaceSession() {
         setNavNodes([]);
         setSearch("");
         setSectionFilter(DEFAULT_SECTION_FILTER);
-        setStatusFilter({ published: true, unlisted: false });
         setHistoryEntries([]);
         setStartPageSlug(null);
         setShowEditor(false);
@@ -1109,21 +1259,11 @@ export default function useWorkspaceSession() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const { q, section, statuses } = parseSearchParams(
+    const { q, section } = parseSearchParams(
       window.location.search || ""
     );
     if (typeof q === "string" && q !== "") setSearch(q);
     if (section) setSectionFilter(section);
-    if (statuses && statuses.length) {
-      setStatusFilter((prev) => {
-        const next = { ...prev };
-        Object.keys(next).forEach((k) => (next[k] = false));
-        statuses.forEach((s) => {
-          if (s in next) next[s] = true;
-        });
-        return next;
-      });
-    }
 
     const route = parseLocation(window.location);
     switch (route.type) {
@@ -1138,11 +1278,7 @@ export default function useWorkspaceSession() {
         setShowSettings(true);
         return;
       case "editor-new":
-        setShowNewModal(!!route.legacy);
-        if (!route.legacy) {
-          setEditorMode("new");
-          setShowEditor(true);
-        }
+        openNewEditor();
         return;
       case "newFolder":
         setShowFolderPrompt(true);
@@ -1196,7 +1332,7 @@ export default function useWorkspaceSession() {
       default:
         return;
     }
-  }, [openDocument]);
+  }, [openDocument, openNewEditor]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1206,21 +1342,11 @@ export default function useWorkspaceSession() {
         openDocument(state.slug);
         return;
       }
-      const { q, section, statuses } = parseSearchParams(
+      const { q, section } = parseSearchParams(
         window.location.search || ""
       );
       if (typeof q === "string") setSearch(q);
       if (section) setSectionFilter(section);
-      if (statuses && statuses.length) {
-        setStatusFilter((prev) => {
-          const next = { ...prev };
-          Object.keys(next).forEach((k) => (next[k] = false));
-          statuses.forEach((s) => {
-            if (s in next) next[s] = true;
-          });
-          return next;
-        });
-      }
 
       const route = parseLocation(window.location);
       switch (route.type) {
@@ -1231,8 +1357,7 @@ export default function useWorkspaceSession() {
           setOnboardingStep("setup");
           return;
         case "editor-new":
-          setEditorMode("new");
-          setShowEditor(true);
+          openNewEditor();
           return;
         case "doc":
           if (route.slug) {
@@ -1302,7 +1427,7 @@ export default function useWorkspaceSession() {
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [openDocument]);
+  }, [openDocument, openNewEditor]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1324,25 +1449,23 @@ export default function useWorkspaceSession() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const statuses = Object.keys(statusFilter).filter((k) => !!statusFilter[k]);
     const includeSection =
       sectionFilter && sectionFilter !== DEFAULT_SECTION_FILTER;
-    const includeStatuses =
-      statuses.length !== DEFAULT_STATUS_FILTER_KEYS.length ||
-      statuses.some((status) => !DEFAULT_STATUS_FILTER_SET.has(status));
     const searchStr = buildSearchString({
       q: search || "",
       section: includeSection ? sectionFilter : "",
-      statuses: includeStatuses ? statuses : [],
     });
     const pathname = window.location.pathname || "/";
     const full = `${pathname}${searchStr}`;
     try {
-      navigate(full, { replace: true, state: {} });
+      const current = window.location.pathname + window.location.search;
+      if (current !== full) {
+        navigate(full, { replace: true, state: {} });
+      }
     } catch (e) {
       console.warn("[workspace] push filters to URL", e);
     }
-  }, [search, sectionFilter, statusFilter]);
+  }, [search, sectionFilter]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1482,6 +1605,22 @@ export default function useWorkspaceSession() {
   }, [user, bootstrapInfo.fresh, onboardingComplete, loadNav]);
 
   useEffect(() => {
+    if (!user || (bootstrapInfo.fresh && !onboardingComplete)) return;
+    if (sectionFilter === "drafts") {
+      loadDrafts();
+    } else {
+      loadNav();
+    }
+  }, [
+    sectionFilter,
+    user,
+    bootstrapInfo.fresh,
+    onboardingComplete,
+    loadNav,
+    loadDrafts,
+  ]);
+
+  useEffect(() => {
     setHistoryEntries([]);
     setHistoryDiffData(null);
     setShowHistoryDiff(false);
@@ -1516,17 +1655,25 @@ export default function useWorkspaceSession() {
       params.set("q", trimmed);
       params.set("field", "title");
       params.set("limit", "50");
-      const statuses = statusOptions
-        .filter((opt) => statusFilter[opt.key])
-        .map((opt) => opt.key);
-      if (statuses.length) {
-        params.set("status", statuses.join(","));
-      }
+      const statuses =
+        sectionFilter === "unlisted"
+          ? ["unlisted"]
+          : sectionFilter === "drafts"
+          ? ["draft"]
+          : ["published"];
+      if (statuses.length) params.set("status", statuses.join(","));
       apiFetch(`/api/documents/search?${params.toString()}`, {
         signal: controller.signal,
       })
         .then((data) => {
-          setSearchResults(Array.isArray(data) ? data : []);
+          const list = Array.isArray(data) ? data : [];
+          const next =
+            sectionFilter === "home"
+              ? list.filter((item) => item?.is_home)
+              : sectionFilter === "library"
+              ? list
+              : list;
+          setSearchResults(next);
           setSearchError(null);
         })
         .catch((err) => {
@@ -1551,7 +1698,7 @@ export default function useWorkspaceSession() {
         searchAbortRef.current = null;
       }
     };
-  }, [search, statusFilter]);
+  }, [search, sectionFilter]);
 
   useEffect(() => {
     const container = previewRef.current;
@@ -1629,6 +1776,24 @@ export default function useWorkspaceSession() {
     }
   }, [startPageSlug, navNodes, selectedDoc]);
 
+  useEffect(() => {
+    if (!selectedDoc) return;
+    const nodeStatus = normalizeStatus((selectedDoc.status || "").toLowerCase());
+    if (sectionFilter === "unlisted" && nodeStatus === "unlisted") return;
+    if (sectionFilter === "drafts" && nodeStatus === "draft") return;
+    if (nodeStatus !== "unlisted" && nodeStatus !== "draft") return;
+    closeEditor();
+    setSelectedDoc(null);
+    setContent("");
+    try {
+      if (typeof window !== "undefined") {
+        navigate("/", { state: {} });
+      }
+    } catch (e) {
+      console.warn("[workspace] navigate root", e);
+    }
+  }, [closeEditor, sectionFilter, selectedDoc]);
+
   const handleOnboardingComplete = useCallback(() => {
     setOnboardingComplete(true);
     loadBootstrap();
@@ -1656,6 +1821,20 @@ export default function useWorkspaceSession() {
     </div>
   );
 
+  const prevEditorSlugRef = useRef(null);
+  useEffect(() => {
+    const current = selectedDoc?.slug || null;
+    if (!showEditor || editorMode !== "edit") {
+      prevEditorSlugRef.current = current;
+      return;
+    }
+    const previous = prevEditorSlugRef.current;
+    if (previous && current && previous !== current) {
+      setEditorDraft(null);
+    }
+    prevEditorSlugRef.current = current;
+  }, [editorMode, selectedDoc?.slug, showEditor]);
+
   const editorSlug =
     editorMode === "edit" && selectedDoc ? selectedDoc.slug : "";
   const editorInitial = editorDraft ?? (editorMode === "edit" ? content : "");
@@ -1674,7 +1853,10 @@ export default function useWorkspaceSession() {
     metadata: selectedDocMetadata,
     currentUser: user,
     parentSlug: editorMode === "new" ? pendingNewDocParent : "",
+    parentOptions: editorMode === "new" ? locationOptions : [],
+    onParentSlugChange: editorMode === "new" ? handleEditorParentChange : null,
     isHome: editorIsHome,
+    onDraftAutoSaved: handleDraftAutoSaved,
   };
 
   const sidebarProps = {
@@ -1686,9 +1868,7 @@ export default function useWorkspaceSession() {
     searchError,
     sectionFilter,
     setSectionFilter,
-    statusOptions,
-    statusFilter,
-    setStatusFilter,
+    onSectionChange: handleSectionChange,
     treeLoading,
     tree,
     onSelect: handleSidebarSelect,
@@ -1704,6 +1884,7 @@ export default function useWorkspaceSession() {
     openNew: openNewModal,
     disableNew: showEditor,
     onMove: handleMoveNode,
+    onSetStatus: handleSetStatus,
   };
 
   const workspaceEditorProps = {

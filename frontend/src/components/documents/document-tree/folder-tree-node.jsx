@@ -16,6 +16,7 @@ const FolderTreeNode = React.memo(
     onRemoveStartPage,
     onTogglePin,
     onToggleHome,
+    onSetStatus,
     onDelete,
     canDelete,
     onMove,
@@ -72,6 +73,11 @@ const FolderTreeNode = React.memo(
     const handleToggleHome = wrapAction(() =>
       onToggleHome?.(node.slug, !node.is_home)
     );
+    const handleToggleUnlisted = wrapAction(() => {
+      const current = (node.status || "").toLowerCase();
+      const nextStatus = current === "unlisted" ? "published" : "unlisted";
+      onSetStatus?.(node.slug, nextStatus);
+    });
     const handleDelete = wrapAction(() => onDelete?.(node.slug));
     const handleSetStart = wrapAction(() => onSetStartPage?.(node.slug));
     const handleMove = wrapAction(() => onMove?.(node));
@@ -141,6 +147,7 @@ const FolderTreeNode = React.memo(
                 canDelete={canDelete}
                 onSetStartPage={handleSetStart}
                 onToggleHome={handleToggleHome}
+                onToggleUnlisted={handleToggleUnlisted}
                 onTogglePin={handleTogglePin}
                 onDelete={handleDelete}
                 onMove={handleMove}
@@ -170,6 +177,7 @@ const FolderTreeNode = React.memo(
                       onRemoveStartPage={onRemoveStartPage}
                       onTogglePin={onTogglePin}
                       onToggleHome={onToggleHome}
+                      onSetStatus={onSetStatus}
                       onDelete={onDelete}
                       canDelete={canDelete}
                       collapsedFolders={collapsedFolders}

@@ -9,6 +9,7 @@ const R = {
   users: "/api/users",
   documentsTree: "/api/documents/tree",
   document: (slug) => `/api/document/${slug}`,
+  documentStatus: (slug) => `/api/document/status/${slug}`,
   documentMove: "/api/document/move",
   documentRestore: (slug) => `/api/documentrestore/${slug}`,
   documentBacklinks: (slug) => `/api/document/backlinks/${slug}`,

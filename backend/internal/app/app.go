@@ -27,11 +27,13 @@ import (
 )
 
 func Run() {
-	contentRoot := resolveContentRoot()
-	contentpath.SetRoots(contentRoot)
-	os.MkdirAll(contentpath.ContentRoot, 0o755)
+	docsRoot := resolveDocsRoot()
+	contentpath.SetRoots(docsRoot)
 	os.MkdirAll(contentpath.DocsRoot, 0o755)
-	backfillContent(contentpath.ContentRoot)
+	os.MkdirAll(contentpath.PublishedRoot, 0o755)
+	os.MkdirAll(contentpath.UnlistedRoot, 0o755)
+	os.MkdirAll(contentpath.DraftsRoot, 0o755)
+	migrateContentToDocs()
 
 	base := filepath.Clean("./data")
 	os.MkdirAll(base, 0o755)
@@ -69,9 +71,21 @@ func Run() {
 	if err := db.QueryRow(`SELECT COUNT(1) FROM users`).Scan(&usersCount); err != nil {
 		usersCount = 0
 	}
-	if setupComplete == "1" || usersCount > 0 {
+	var docsCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&docsCount); err != nil {
+		docsCount = 0
+	}
+
+	diskDocCount := countDocsOnDisk()
+
+	
+	shouldSync := (setupComplete == "1" || usersCount > 0) || docsCount == 0 || diskDocCount > docsCount
+	if shouldSync {
+		log.Printf("Syncing content index...")
 		if err := documents.SyncContentIndex(db); err != nil {
 			log.Printf("sync content index: %v", err)
+		} else {
+			log.Printf("Content index synced successfully")
 		}
 	}
 
@@ -190,62 +204,80 @@ func Run() {
 	}
 }
 
-func resolveContentRoot() string {
+func resolveDocsRoot() string {
 	candidates := []string{
-		filepath.Clean(filepath.Join("..", "content")),
-		filepath.Clean("content"),
+		filepath.Clean(filepath.Join("..", "docs")),
+		filepath.Clean("docs"),
 	}
 	for _, c := range candidates {
 		if info, err := os.Stat(c); err == nil && info.IsDir() {
 			return c
 		}
 	}
-	return filepath.Clean("content")
+	return filepath.Clean("docs")
 }
 
-func backfillContent(target string) {
-	alts := []string{
-		filepath.Clean("content"),
-		filepath.Clean(filepath.Join("..", "content")),
+func migrateContentToDocs() {
+	
+	oldPaths := []string{
+		filepath.Clean("content/docs"),
+		filepath.Clean(filepath.Join("..", "content", "docs")),
 	}
-	for _, alt := range alts {
-		alt = filepath.Clean(alt)
-		if alt == target {
+	for _, oldPath := range oldPaths {
+		if info, err := os.Stat(oldPath); err != nil || !info.IsDir() {
 			continue
 		}
-		info, err := os.Stat(alt)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		_ = filepath.WalkDir(alt, func(path string, d os.DirEntry, err error) error {
+		
+		_ = filepath.WalkDir(oldPath, func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			rel, err := filepath.Rel(alt, path)
+			rel, err := filepath.Rel(oldPath, path)
 			if err != nil {
 				return nil
 			}
-			relSlash := filepath.ToSlash(rel)
-			if !strings.HasPrefix(relSlash, "docs/") {
-				return nil
-			}
-			dst := filepath.Join(target, rel)
+			dst := filepath.Join(contentpath.PublishedRoot, rel)
 			if _, err := os.Stat(dst); err == nil {
+				
 				return nil
 			}
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				log.Printf("content copy mkdir: %v", err)
+				log.Printf("migration mkdir: %v", err)
 				return nil
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
-				log.Printf("content copy read: %v", err)
+				log.Printf("migration read: %v", err)
 				return nil
 			}
 			if err := os.WriteFile(dst, data, 0o644); err != nil {
-				log.Printf("content copy write: %v", err)
+				log.Printf("migration write: %v", err)
 			}
 			return nil
 		})
 	}
+}
+
+func countDocsOnDisk() int {
+	roots := []string{
+		contentpath.PublishedRoot,
+		contentpath.UnlistedRoot,
+		contentpath.DraftsRoot,
+	}
+	count := 0
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+				count++
+			}
+			return nil
+		})
+	}
+	return count
 }

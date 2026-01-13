@@ -1,4 +1,3 @@
-// Centralized routing helpers for the SPA
 export const slugToSegments = (slug) =>
   (slug || "")
     .split("/")

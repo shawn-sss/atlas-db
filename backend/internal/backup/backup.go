@@ -89,7 +89,7 @@ func CreateBackup() (string, string, error) {
 		return err
 	}
 
-	absContent, _ := filepath.Abs(contentpath.ContentRoot)
+	absContent, _ := filepath.Abs(contentpath.DocsRoot)
 	contentParent := filepath.Dir(absContent)
 	contentName := filepath.Base(absContent)
 

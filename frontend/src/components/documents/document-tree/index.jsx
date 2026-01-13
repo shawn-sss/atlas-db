@@ -11,6 +11,7 @@ const DocumentTree = React.memo(
     onRemoveStartPage,
     onTogglePin,
     onToggleHome,
+    onSetStatus,
     onDelete,
     onMove,
     canDelete = false,
@@ -36,6 +37,7 @@ const DocumentTree = React.memo(
             onRemoveStartPage={onRemoveStartPage}
             onTogglePin={onTogglePin}
             onToggleHome={onToggleHome}
+            onSetStatus={onSetStatus}
             onDelete={onDelete}
             onMove={onMove}
             canDelete={canDelete}
@@ -56,6 +58,7 @@ const DocumentTree = React.memo(
           onRemoveStartPage={onRemoveStartPage}
           onTogglePin={onTogglePin}
           onToggleHome={onToggleHome}
+          onSetStatus={onSetStatus}
           onDelete={onDelete}
           onMove={onMove}
           canDelete={canDelete}
