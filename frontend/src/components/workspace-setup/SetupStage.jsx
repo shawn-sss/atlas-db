@@ -34,7 +34,7 @@ const SetupStage = ({
         <div className="start-action-note start-lede">
           <p>
             These settings define how activity appears and what teammates see
-            when they jump into Atlas DB.
+            when they jump into {brandTitle}.
           </p>
         </div>
         <div className="start-form-stack">

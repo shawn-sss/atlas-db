@@ -1,11 +1,15 @@
-export const DEFAULT_WELCOME_MESSAGE = `---
+import { DEFAULT_APP_TITLE } from "./defaults";
+
+export const getWelcomeMessage = (appTitle = DEFAULT_APP_TITLE) => {
+  const title = (appTitle || "").trim() || DEFAULT_APP_TITLE;
+  return `---
 status: published
 owner: owner
 ---
 
-# Welcome to Atlas DB
+# Welcome to ${title}
 
-Atlas DB keeps your knowledge, action items, and onboarding paths in one workspace so teammates can orient themselves quickly.
+${title} keeps your knowledge, action items, and onboarding paths in one workspace so teammates can orient themselves quickly.
 
 ## What this workspace gives you
 
@@ -19,14 +23,15 @@ Atlas DB keeps your knowledge, action items, and onboarding paths in one workspa
 
 ## Getting started (quick)
 
-- Open one of the starter guides below to understand how your team uses Atlas DB today.
+- Open one of the starter guides below to understand how your team uses ${title} today.
 - Create a focused page with **New**, pick a descriptive title, then link it to related pages so others can discover the context.
 - Pin the handbook, troubleshooting guide, or another reliable doc as the Start page so teammates land on the best instructions.
 
 ## Starter content
 
-- **Important Links** – the hub for dashboards, catalogues, and shared policies you reference before editing downstream docs.
-- **New PC Setup** – describe the machine class, imaging expectations, and who covers each handoff step.
-- **Software Installs** – capture the repeatable installers we run after imaging, with verification guidance for each version.
+- **Important Links** - the hub for dashboards, catalogues, and shared policies you reference before editing downstream docs.
+- **New PC Setup** - describe the machine class, imaging expectations, and who covers each handoff step.
+- **Software Installs** - capture the repeatable installers we run after imaging, with verification guidance for each version.
 
 Keep pages concise, link liberally, and surface metadata (owner/status) so teammates always know what to trust.`;
+};

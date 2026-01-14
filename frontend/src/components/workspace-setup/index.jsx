@@ -14,7 +14,7 @@ import {
   DEFAULT_START_PAGE_SLUG,
 } from "../../constants/defaults";
 import { COMMON_TIMEZONES } from "../../constants/timezones";
-import { DEFAULT_WELCOME_MESSAGE } from "../../constants/onboarding";
+import { getWelcomeMessage } from "../../constants/onboarding";
 import { apiFetch } from "../../api/client";
 import ROUTES from "../../api/routes";
 
@@ -198,7 +198,7 @@ export default function OnboardingFlow({
       await apiFetch(ROUTES.document(encodeURIComponent(slug)), {
         method: "POST",
         headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: DEFAULT_WELCOME_MESSAGE,
+        body: getWelcomeMessage(finalTitle),
       });
       onLogin(userData);
       if (onComplete) {

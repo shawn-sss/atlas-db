@@ -2064,6 +2064,11 @@ export default function useWorkspaceSession() {
   const appTitleText =
     (bootstrapInfo.appTitle || "").trim() || DEFAULT_APP_TITLE;
 
+  useEffect(() => {
+    if (!bootstrapReady) return;
+    document.title = appTitleText;
+  }, [appTitleText, bootstrapReady]);
+
   const mainContent = !bootstrapReady ? (
     <div className="auth-view">
       <div className="auth-inner">

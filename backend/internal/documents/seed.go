@@ -22,6 +22,11 @@ type seedDoc struct {
 const defaultSeedMetaKey = "seed_default_content_v1"
 
 func seedDefaultStructureIfNeeded(db *sql.DB) []string {
+	var setupComplete sql.NullString
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'setup_complete'`).Scan(&setupComplete); err != nil || strings.TrimSpace(setupComplete.String) != "1" {
+		return nil
+	}
+
 	var seeded sql.NullString
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey).Scan(&seeded); err == nil && strings.TrimSpace(seeded.String) != "" {
 		return nil

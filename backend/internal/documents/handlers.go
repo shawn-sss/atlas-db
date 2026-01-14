@@ -680,28 +680,27 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		}
 		if isFirst {
 			EnsureStartPageMeta(db, slug, true)
+		}
+		if slug == "start-page" {
+			seededSlugs := seedDefaultStructureIfNeeded(db)
 
-			if slug == "start-page" {
-				seededSlugs := seedDefaultStructureIfNeeded(db)
-
+			if len(seededSlugs) > 0 {
 				if err := SyncContentIndex(db); err != nil {
 
 					log.Printf("sync after seed: %v", err)
 				}
-				if len(seededSlugs) > 0 {
-					var placeholders strings.Builder
-					args := make([]any, len(seededSlugs))
-					for i, s := range seededSlugs {
-						if i > 0 {
-							placeholders.WriteString(",")
-						}
-						placeholders.WriteString("?")
-						args[i] = s
+				var placeholders strings.Builder
+				args := make([]any, len(seededSlugs))
+				for i, s := range seededSlugs {
+					if i > 0 {
+						placeholders.WriteString(",")
 					}
-					_, err := db.Exec(fmt.Sprintf("UPDATE documents SET is_home = 1 WHERE slug IN (%s)", placeholders.String()), args...)
-					if err != nil {
-						log.Printf("set seeded home flag: %v", err)
-					}
+					placeholders.WriteString("?")
+					args[i] = s
+				}
+				_, err := db.Exec(fmt.Sprintf("UPDATE documents SET is_home = 1 WHERE slug IN (%s)", placeholders.String()), args...)
+				if err != nil {
+					log.Printf("set seeded home flag: %v", err)
 				}
 			}
 		}
