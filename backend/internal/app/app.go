@@ -262,7 +262,6 @@ func countDocsOnDisk() int {
 	roots := []string{
 		contentpath.PublishedRoot,
 		contentpath.UnlistedRoot,
-		contentpath.DraftsRoot,
 	}
 	count := 0
 	for _, root := range roots {

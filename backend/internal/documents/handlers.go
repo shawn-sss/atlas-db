@@ -74,24 +74,9 @@ func listDocumentsHandler(db *sql.DB) http.HandlerFunc {
 		if len(statuses) == 0 {
 			statuses = []string{"published"}
 		}
-		ownerFilter := ""
-		if containsStatus(statuses, "draft") {
-			u := auth.UserFromContext(r)
-			if u == nil {
-				if found, err := auth.GetUserFromRequest(r, db); err == nil {
-					u = found
-				}
-			}
-			if u == nil {
-				docErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			ownerFilter = u.Username
-			statuses = []string{"draft"}
-		}
 		pathPrefix := cleanPrefix(r.URL.Query().Get("pathPrefix"))
 
-		query, args := buildDocumentQuery(statuses, pathPrefix, ownerFilter)
+		query, args := buildDocumentQuery(statuses, pathPrefix, "")
 		rows, err := db.Query(query, args...)
 		if err != nil {
 			docErr(w, http.StatusInternalServerError, "query error")
@@ -135,22 +120,7 @@ func navTreeHandler(db *sql.DB) http.HandlerFunc {
 		if len(statuses) == 0 {
 			statuses = []string{"published", "unlisted"}
 		}
-		ownerFilter := ""
-		if containsStatus(statuses, "draft") {
-			u := auth.UserFromContext(r)
-			if u == nil {
-				if found, err := auth.GetUserFromRequest(r, db); err == nil {
-					u = found
-				}
-			}
-			if u == nil {
-				docErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			ownerFilter = u.Username
-			statuses = []string{"draft"}
-		}
-		queryStr, args := buildDocumentQuery(statuses, "", ownerFilter)
+		queryStr, args := buildDocumentQuery(statuses, "", "")
 
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -209,21 +179,6 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		statuses := searchStatuses(r, r.URL.Query().Get("status"))
-		ownerFilter := ""
-		if containsStatus(statuses, "draft") {
-			u := auth.UserFromContext(r)
-			if u == nil {
-				if found, err := auth.GetUserFromRequest(r, db); err == nil {
-					u = found
-				}
-			}
-			if u == nil {
-				docErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			ownerFilter = u.Username
-			statuses = []string{"draft"}
-		}
 
 		field := strings.TrimSpace(r.URL.Query().Get("field"))
 		matchPattern := queryText
@@ -245,10 +200,6 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 			for _, status := range statuses {
 				args = append(args, status)
 			}
-		}
-		if ownerFilter != "" {
-			filters = append(filters, "d.owner = ?")
-			args = append(args, ownerFilter)
 		}
 		rankExpr := "bm25(documents_fts, 0.6, 0.35, 0.1)"
 		var builder strings.Builder
@@ -344,19 +295,6 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusInternalServerError, "query error")
 			return
 		}
-		if validRow && strings.EqualFold(statusRow.String, "draft") {
-			u := auth.UserFromContext(r)
-			if u == nil {
-				if found, err := auth.GetUserFromRequest(r, db); err == nil {
-					u = found
-				}
-			}
-			if u == nil || !strings.EqualFold(strings.TrimSpace(owner.String), strings.TrimSpace(u.Username)) {
-				docErr(w, http.StatusNotFound, "not found")
-				return
-			}
-		}
-
 		meta, body := parseDocumentMetadata(string(content))
 		resp := documentDetailResponse{
 			DocID:       strings.TrimSpace(docID.String),
@@ -424,6 +362,9 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 				targetHub = false
 			}
 		}
+		overwriteParam := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("overwrite")))
+		allowOverwrite := overwriteParam == "1" || overwriteParam == "true" || overwriteParam == "yes"
+		renToRaw := strings.TrimSpace(r.URL.Query().Get("rename_to"))
 
 		
 		body, err := io.ReadAll(r.Body)
@@ -450,26 +391,59 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		
-		if meta.Status == "draft" {
-			if u := auth.UserFromContext(r); u != nil && strings.TrimSpace(u.Username) != "" {
-				meta.Owner = u.Username
-				if updated, changed := setFrontMatterField(content, "owner", meta.Owner); changed {
-					content = updated
+		var overwriteTargetDocID sql.NullString
+		var overwriteTargetStatus sql.NullString
+		if renToRaw != "" {
+			newSlug := slugify(renToRaw)
+			if newSlug == "" {
+				newSlug = "untitled"
+			}
+			if newSlug != slug {
+				if err := db.QueryRow(`SELECT doc_id,status FROM documents WHERE slug = ?`, newSlug).Scan(&overwriteTargetDocID, &overwriteTargetStatus); err != nil {
+					if err != sql.ErrNoRows {
+						docErr(w, http.StatusInternalServerError, "query error")
+						return
+					}
+					overwriteTargetDocID = sql.NullString{}
+					overwriteTargetStatus = sql.NullString{}
+				}
+				if overwriteTargetDocID.Valid {
+					if overwriteTargetDocID.String == "" {
+						if !allowOverwrite {
+							docErr(w, http.StatusConflict, "slug exists")
+							return
+						}
+					} else if overwriteTargetDocID.String != meta.ID {
+						if !allowOverwrite {
+							docErr(w, http.StatusConflict, "slug exists")
+							return
+						}
+						meta.ID = overwriteTargetDocID.String
+						if updated, changed := setFrontMatterField(content, "id", meta.ID); changed {
+							content = updated
+						}
+					}
 				}
 			}
 		}
 
-		
-		if u := auth.UserFromContext(r); u != nil {
-			var existingOwner sql.NullString
+		if renToRaw == "" {
+			var existingDocID sql.NullString
 			var existingStatus sql.NullString
-			if err := db.QueryRow(`SELECT owner,status FROM documents WHERE slug = ?`, slug).Scan(&existingOwner, &existingStatus); err == nil {
-				if strings.EqualFold(existingStatus.String, "draft") &&
-					!strings.EqualFold(strings.TrimSpace(existingOwner.String), strings.TrimSpace(u.Username)) {
-					docErr(w, http.StatusForbidden, "forbidden")
-					return
+			if err := db.QueryRow(`SELECT doc_id,status FROM documents WHERE slug = ?`, slug).Scan(&existingDocID, &existingStatus); err == nil {
+				if existingDocID.String != "" && existingDocID.String != meta.ID {
+					if !allowOverwrite {
+						docErr(w, http.StatusConflict, "slug exists")
+						return
+					}
+					meta.ID = existingDocID.String
+					if updated, changed := setFrontMatterField(content, "id", meta.ID); changed {
+						content = updated
+					}
 				}
+			} else if err != sql.ErrNoRows {
+				docErr(w, http.StatusInternalServerError, "query error")
+				return
 			}
 		}
 
@@ -532,7 +506,6 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 
 		var oldSlugVal string
 		wasStartPage := false
-		renToRaw := strings.TrimSpace(r.URL.Query().Get("rename_to"))
 		if renToRaw != "" {
 			newSlug := slugify(renToRaw)
 			if newSlug == "" {
@@ -544,16 +517,16 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 					return
 				}
 
-				var existingDocID sql.NullString
-				err := db.QueryRow(`SELECT doc_id FROM documents WHERE slug = ?`, newSlug).Scan(&existingDocID)
-				if err == nil {
-					if existingDocID.String == "" || existingDocID.String != meta.ID {
+				if overwriteTargetDocID.Valid {
+					if overwriteTargetDocID.String == "" {
+						if !allowOverwrite {
+							docErr(w, http.StatusConflict, "slug exists")
+							return
+						}
+					} else if overwriteTargetDocID.String != meta.ID {
 						docErr(w, http.StatusConflict, "slug exists")
 						return
 					}
-				} else if err != sql.ErrNoRows {
-					docErr(w, http.StatusInternalServerError, "query error")
-					return
 				}
 
 				useIndexLayout := strings.EqualFold(filepath.Base(path), "_index.md")
@@ -568,9 +541,15 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 					docErr(w, http.StatusBadRequest, "invalid new slug")
 					return
 				}
-				if _, statErr := os.Stat(newPath); statErr == nil {
-					docErr(w, http.StatusConflict, "slug exists")
-					return
+				if info, statErr := os.Stat(newPath); statErr == nil {
+					if info.IsDir() || !allowOverwrite {
+						docErr(w, http.StatusConflict, "slug exists")
+						return
+					}
+					if err := os.Remove(newPath); err != nil {
+						docErr(w, http.StatusInternalServerError, "overwrite failed")
+						return
+					}
 				}
 				var sIsStart int
 				if err := db.QueryRow(`SELECT is_start_page FROM documents WHERE slug = ?`, slug).Scan(&sIsStart); err == nil && sIsStart != 0 {
@@ -694,6 +673,10 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 
 		if u := auth.UserFromContext(r); u != nil {
 			db.Exec(`INSERT INTO audit(user_id,action,target) VALUES(?,?,?)`, u.ID, "edit_document", slug)
+			clearUserDraftBySlug(db, u, slug)
+			if oldSlugVal != "" && oldSlugVal != slug {
+				clearUserDraftBySlug(db, u, oldSlugVal)
+			}
 		}
 		if isFirst {
 			EnsureStartPageMeta(db, slug, true)
@@ -1214,7 +1197,7 @@ func documentStatusHandler(db *sql.DB) http.HandlerFunc {
 		now := time.Now().UTC().Format(time.RFC3339)
 		query := `UPDATE documents SET status = ?, updated_at = ? WHERE slug = ? OR slug LIKE ?`
 		args := []any{status, now, slug, like}
-		if status == "unlisted" || status == "draft" {
+		if status == "unlisted" {
 			query = `UPDATE documents SET status = ?, is_home = 0, updated_at = ? WHERE slug = ? OR slug LIKE ?`
 		}
 		res, err := db.Exec(query, args...)
@@ -1523,7 +1506,6 @@ func searchStatuses(r *http.Request, raw string) []string {
 	allowed := map[string]struct{}{
 		"published": {},
 		"unlisted":  {},
-		"draft":     {},
 	}
 	statuses := parseStatusParam(raw)
 	if len(statuses) == 0 {
@@ -1578,7 +1560,7 @@ func ensureDocumentMetadata(content string, meta *DocumentMetadata, user *auth.U
 	hasStatus := block != "" && frontMatterHasKey(block, "status")
 	if meta.Status == "" {
 		if hasStatus {
-			return content, fmt.Errorf("Status must be published, unlisted, or draft")
+			return content, fmt.Errorf("Status must be published or unlisted")
 		}
 		meta.Status = "published"
 		if updated, changed := setFrontMatterField(content, "status", meta.Status); changed {
@@ -1640,7 +1622,7 @@ func cleanSlugParam(raw string) string {
 
 func findDocumentPath(slug string, preferIndexForNew bool) (string, string, error) {
 	
-	statuses := []string{"published", "unlisted", "draft"}
+	statuses := []string{"published", "unlisted"}
 	for _, status := range statuses {
 		path, err := docPathFromSlugWithHint(slug, status, preferIndexForNew)
 		if err != nil {

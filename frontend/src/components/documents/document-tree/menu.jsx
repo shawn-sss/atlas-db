@@ -68,10 +68,12 @@ export const DocumentTreeMenuItems = React.memo(
 
     const isDraft = (node?.status || "").toLowerCase() === "draft";
 
+    const allowDraftDelete = canDelete || isDraft;
+
     if (isDraft) {
       return (
         <>
-          {canDelete && (
+          {allowDraftDelete && (
             <button className="doc-tree-menu-item" onClick={onDelete}>
               Delete permanently
             </button>

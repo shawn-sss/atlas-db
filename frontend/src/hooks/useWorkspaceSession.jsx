@@ -163,8 +163,22 @@ export default function useWorkspaceSession() {
     };
   }, [selectedDoc]);
 
+  const draftNodesWithOrigin = useMemo(() => {
+    if (sectionFilter !== "drafts") return draftNodes;
+    return (draftNodes || []).map((node) => {
+      if (!node?.slug) return node;
+      const clean = cleanSlug(node.slug);
+      const exists = docBySlugMap.has(clean);
+      return {
+        ...node,
+        originLabel: exists ? "Existing" : "New",
+      };
+    });
+  }, [draftNodes, docBySlugMap, sectionFilter]);
+
   const filteredNavNodes = useMemo(() => {
-    const source = sectionFilter === "drafts" ? draftNodes : navNodes;
+    const source =
+      sectionFilter === "drafts" ? draftNodesWithOrigin : navNodes;
     return source.filter((node) => {
       if (!node?.slug) return false;
       const nodeStatus = normalizeStatus((node.status || "").toLowerCase());
@@ -182,7 +196,7 @@ export default function useWorkspaceSession() {
       }
       return nodeStatus === "published";
     });
-  }, [draftNodes, navNodes, sectionFilter]);
+  }, [draftNodesWithOrigin, navNodes, sectionFilter]);
 
   const tree = useMemo(
     () => buildTree(filteredNavNodes, startPageSlug),
@@ -545,6 +559,38 @@ export default function useWorkspaceSession() {
     }
   }, []);
 
+  const openDraft = useCallback(async (slug) => {
+    if (!slug) return;
+    const clean = cleanSlug(slug);
+    if (openDocAbortRef.current) {
+      openDocAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    openDocAbortRef.current = controller;
+    const requestId = openDocRequestRef.current + 1;
+    openDocRequestRef.current = requestId;
+    setLoadingDoc(true);
+    try {
+      const data = await apiFetch(
+        ROUTES.draft(encodeURIComponent(clean)),
+        { signal: controller.signal }
+      );
+      if (openDocRequestRef.current !== requestId) return;
+      setSelectedDoc(data);
+      setContent(data.content || "");
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (openDocRequestRef.current !== requestId) return;
+      setError(err.message || "Draft not found");
+      setSelectedDoc(null);
+      setContent("");
+    } finally {
+      if (openDocRequestRef.current === requestId) {
+        setLoadingDoc(false);
+      }
+    }
+  }, []);
+
   const loadDrafts = useCallback(async () => {
     if (draftAbortRef.current) {
       draftAbortRef.current.abort();
@@ -563,11 +609,8 @@ export default function useWorkspaceSession() {
         setError("Failed to load drafts (retry)");
       }
     }, 8000);
-    const params = new URLSearchParams();
-    params.set("status", "draft");
-    const navUrl = `${ROUTES.documentsTree}?${params.toString()}`;
     try {
-      const data = await apiFetch(navUrl, {
+      const data = await apiFetch(ROUTES.draftsTree, {
         signal: controller.signal,
       });
       if (draftAbortRef.current !== controller) return;
@@ -632,17 +675,23 @@ export default function useWorkspaceSession() {
     (slug) => {
       const normalizedSlug = cleanSlug(slug);
       if (!normalizedSlug) return;
+      const useDraft = sectionFilter === "drafts";
       closeEditor();
       if (normalizedSlug === selectedSlug) {
+        if (useDraft) {
+          setSelectedDoc(null);
+          setContent("");
+          return;
+        }
         const parentSlug = selectedDoc
           ? cleanSlug(selectedDoc.parent_slug || selectedDoc.parent || "")
           : null;
         if (parentSlug && parentSlug !== normalizedSlug) {
-          openDocument(parentSlug);
+          useDraft ? openDraft(parentSlug) : openDocument(parentSlug);
           return;
         }
         if (defaultStartPageSlug) {
-          openDocument(defaultStartPageSlug);
+          useDraft ? openDraft(defaultStartPageSlug) : openDocument(defaultStartPageSlug);
           return;
         }
         setSelectedDoc(null);
@@ -659,14 +708,16 @@ export default function useWorkspaceSession() {
         }
         return;
       }
-      openDocument(normalizedSlug);
+      useDraft ? openDraft(normalizedSlug) : openDocument(normalizedSlug);
     },
     [
       defaultStartPageSlug,
       openDocument,
+      openDraft,
       selectedDoc,
       selectedSlug,
       closeEditor,
+      sectionFilter,
     ]
   );
 
@@ -1135,27 +1186,31 @@ export default function useWorkspaceSession() {
   const handleDeleteDocument = useCallback(
     async (slug) => {
       if (!slug) return;
-      if (!canAdmin) {
-        setError("Admin or Owner permissions required to delete.");
-        return;
-      }
       const clean = cleanSlug(slug);
       const isDraft =
         (selectedDoc?.slug === clean &&
           normalizeStatus((selectedDoc?.status || "").toLowerCase()) ===
             "draft") ||
         draftNodes.some((node) => cleanSlug(node?.slug || "") === clean);
-      if (normalizedStartPageSlug && normalizedStartPageSlug === clean) {
+      if (!canAdmin && !isDraft) {
+        setError("Admin or Owner permissions required to delete.");
+        return;
+      }
+      if (!isDraft && normalizedStartPageSlug && normalizedStartPageSlug === clean) {
         setError(
           "Cannot delete the active start page. Choose a different start page first."
         );
         return;
       }
       const ok = window.confirm(
-        "This will permanently delete this item from the library. This cannot be undone."
+        isDraft
+          ? "This will permanently delete this draft. This cannot be undone."
+          : "This will permanently delete this item from the library. This cannot be undone."
       );
       if (!ok) return;
-      const endpoint = `/api/document/${encodeURIComponent(clean)}`;
+      const endpoint = isDraft
+        ? ROUTES.draft(encodeURIComponent(clean))
+        : `/api/document/${encodeURIComponent(clean)}`;
       await apiFetch(endpoint, { method: "DELETE" });
       if (selectedDoc?.slug === clean) {
         setSelectedDoc(null);
@@ -1465,7 +1520,7 @@ export default function useWorkspaceSession() {
     } catch (e) {
       console.warn("[workspace] push filters to URL", e);
     }
-  }, [search, sectionFilter]);
+  }, [search, sectionFilter, draftNodes]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1643,6 +1698,18 @@ export default function useWorkspaceSession() {
     const trimmed = search.trim();
     if (trimmed === "") {
       setSearchResults([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+    if (sectionFilter === "drafts") {
+      const q = trimmed.toLowerCase();
+      const list = (draftNodes || []).filter((item) => {
+        const title = (item?.title || "").toLowerCase();
+        const slug = (item?.slug || "").toLowerCase();
+        return title.includes(q) || slug.includes(q);
+      });
+      setSearchResults(list);
       setSearchError(null);
       setSearchLoading(false);
       return;
@@ -1852,6 +1919,7 @@ export default function useWorkspaceSession() {
     linkables: documents,
     metadata: selectedDocMetadata,
     currentUser: user,
+    currentDocId: editorMode === "edit" ? selectedDoc?.doc_id : null,
     parentSlug: editorMode === "new" ? pendingNewDocParent : "",
     parentOptions: editorMode === "new" ? locationOptions : [],
     onParentSlugChange: editorMode === "new" ? handleEditorParentChange : null,

@@ -52,6 +52,7 @@ const DocumentTree = React.memo(
           key={node.slug}
           node={node}
           level={level}
+          originLabel={node.originLabel}
           onSelect={onSelect}
           activeSlug={activeSlug}
           onSetStartPage={onSetStartPage}

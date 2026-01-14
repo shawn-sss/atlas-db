@@ -15,6 +15,8 @@ import {
   IconCloudUpload,
   IconDraft,
   IconLink,
+  IconSquare,
+  IconRefresh,
   IconImage,
   IconCode,
   IconTable,
@@ -37,6 +39,7 @@ export default function Editor({
   onExitDualPane,
   metadata = null,
   currentUser = null,
+  currentDocId = null,
   parentSlug = "",
   parentOptions = [],
   onParentSlugChange,
@@ -71,13 +74,15 @@ export default function Editor({
   const draftSaveTimerRef = useRef(null);
   const lastDraftSavedRef = useRef(null);
   const draftSlugRef = useRef(null);
+  const autoSlugFromTitleRef = useRef(false);
   const [overwritePrompt, setOverwritePrompt] = useState(false);
-  const [overwriteMessage] = useState("");
+  const [overwriteMessage, setOverwriteMessage] = useState("");
+  const [overwriteTarget, setOverwriteTarget] = useState(null);
+  const [pendingOverwriteSave, setPendingOverwriteSave] = useState(null);
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [metaStatus, setMetaStatus] = useState(() => {
     const normalized = normalizeStatus(metadata?.status);
-    if (normalized) return normalized;
-    return isEdit ? "published" : "draft";
+    return normalized || (isEdit ? "published" : "draft");
   });
   const [metaCreatedBy, setMetaCreatedBy] = useState(
     (metadata?.owner || currentUser?.username || "").trim()
@@ -113,6 +118,8 @@ export default function Editor({
     return parentSlug ? `${parentSlug}/${saveSlug}` : saveSlug;
   }, [isEdit, slug, parentSlug, saveSlug]);
   const draftKey = useMemo(() => `atlas-editor-draft:${fullSlug}`, [fullSlug]);
+  const [presenceEditors, setPresenceEditors] = useState([]);
+  const [presenceUnavailable, setPresenceUnavailable] = useState(false);
   const [cmModules, setCmModules] = useState(null);
   useEffect(() => {
     let mounted = true;
@@ -163,6 +170,7 @@ export default function Editor({
     lastSavedContentRef.current = null;
     draftSlugRef.current = null;
     lastDraftSavedRef.current = null;
+    autoSlugFromTitleRef.current = !String(nextTitle || "").trim();
     try {
       const d = localStorage.getItem(`atlas-editor-draft:${nextSlug}`);
       if (d && d !== (initial || "")) setStagedDraft(d);
@@ -266,16 +274,168 @@ export default function Editor({
   }, [linkables, documentQuery]);
 
   const metadataReady = Boolean(metaStatus && metaCreatedBy.trim());
-  const buildFrontMatter = (statusValue, ownerValue) => {
+  const buildFrontMatter = (statusValue, ownerValue, docIdValue) => {
     const normalizedStatus = normalizeStatus(statusValue);
     const normalizedOwner = (ownerValue || "").trim();
+    const normalizedId = (docIdValue || "").trim();
     if (!normalizedStatus || !normalizedOwner) return "";
-    return `---\nstatus: ${normalizedStatus}\nowner: ${normalizedOwner}\n---\n\n`;
+    const idLine = normalizedId ? `id: ${normalizedId}\n` : "";
+    return `---\nstatus: ${normalizedStatus}\nowner: ${normalizedOwner}\n${idLine}---\n\n`;
   };
   const frontMatter = useMemo(() => {
     if (!metadataReady) return "";
-    return buildFrontMatter(metaStatus, metaCreatedBy);
-  }, [metadataReady, metaStatus, metaCreatedBy]);
+    return buildFrontMatter(metaStatus, metaCreatedBy, currentDocId);
+  }, [metadataReady, metaStatus, metaCreatedBy, currentDocId]);
+
+  const isDraftMetadata = useMemo(
+    () => normalizeStatus(metadata?.status) === "draft",
+    [metadata?.status]
+  );
+  const presenceSlug = useMemo(() => {
+    if (!isEdit || isDraftMetadata) return "";
+    return cleanSlug(slug || "");
+  }, [isEdit, isDraftMetadata, slug]);
+  const currentUsername = (currentUser?.username || "").trim();
+
+  const fetchPresence = useCallback(async (targetSlug) => {
+    const url = ROUTES.documentPresence(encodeURIComponent(targetSlug));
+    const res = await fetch(url, { method: "GET", cache: "no-store" });
+    if (!res.ok) {
+      throw new Error("presence fetch failed");
+    }
+    const data = await res.json().catch(() => []);
+    return Array.isArray(data) ? data : [];
+  }, []);
+
+  const updatePresence = useCallback(async (targetSlug) => {
+    const url = ROUTES.documentPresence(encodeURIComponent(targetSlug));
+    await fetch(url, { method: "POST" });
+  }, []);
+
+  useEffect(() => {
+    if (!presenceSlug) {
+      setPresenceEditors([]);
+      setPresenceUnavailable(false);
+      return;
+    }
+    let mounted = true;
+    const tick = async () => {
+      try {
+        await updatePresence(presenceSlug);
+      } catch (e) {}
+      try {
+        const list = await fetchPresence(presenceSlug);
+        if (!mounted) return;
+        setPresenceEditors(list);
+        setPresenceUnavailable(false);
+      } catch (e) {
+        if (!mounted) return;
+        setPresenceUnavailable(true);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [presenceSlug, fetchPresence, updatePresence]);
+
+  const presenceInfo = useMemo(() => {
+    if (!presenceSlug) {
+      return {
+        label: "Editing (unsaved)",
+        title: "Presence starts after a URL is set.",
+        alert: false,
+      };
+    }
+    if (presenceUnavailable) {
+      return {
+        label: "Editing status unavailable",
+        title: "Presence data could not be loaded.",
+        alert: false,
+      };
+    }
+    const names = Array.isArray(presenceEditors)
+      ? presenceEditors
+          .map((entry) => (entry?.username || "").trim())
+          .filter(Boolean)
+      : [];
+    const uniqueNames = Array.from(new Set(names));
+    const normalizedSelf = currentUsername.toLowerCase();
+    const otherEditors = uniqueNames.filter(
+      (name) => name.toLowerCase() !== normalizedSelf
+    );
+    if (!otherEditors.length) {
+      return {
+        label: "Editing: only you",
+        title: "No other active editors.",
+        alert: false,
+      };
+    }
+    const formatList =
+      otherEditors.length > 2
+        ? `${otherEditors.slice(0, 2).join(", ")} +${
+            otherEditors.length - 2
+          } more`
+        : otherEditors.join(", ");
+    return {
+      label: `Editing with ${formatList}`,
+      title: `Also editing: ${otherEditors.join(", ")}`,
+      alert: true,
+    };
+  }, [presenceEditors, presenceSlug, presenceUnavailable, currentUsername]);
+
+  const checkSlugConflict = useCallback(
+    async (checkSlug) => {
+      try {
+        const checkEndpoint = endpointPrefix + encodeURI(checkSlug);
+        const res = await fetch(checkEndpoint, {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (!res.ok) return { exists: false, conflict: false };
+        const data = await res.json().catch(() => null);
+        const docId = (data?.doc_id || "").trim();
+        const status = normalizeStatus((data?.status || "").toLowerCase());
+        const owner = (data?.owner || "").trim();
+        const currentId = (currentDocId || "").trim();
+        if (currentId && docId && currentId === docId) {
+          return { exists: true, conflict: false, status, owner, docId };
+        }
+        return { exists: true, conflict: true, status, owner, docId };
+      } catch (e) {
+        return { exists: false, conflict: false };
+      }
+    },
+    [currentDocId, currentUsername, endpointPrefix]
+  );
+
+  const formatOverwriteMessage = useCallback(
+    (conflictSlug, conflictStatus) => {
+      return `A document already exists at ${slugToPath(
+        conflictSlug
+      )}. Saving will overwrite it.`;
+    },
+    []
+  );
+
+  const closeOverwritePrompt = () => {
+    setOverwritePrompt(false);
+    setOverwriteMessage("");
+    setOverwriteTarget(null);
+  };
+
+  const confirmOverwrite = async () => {
+    const target = overwriteTarget;
+    closeOverwritePrompt();
+    if (target) {
+      await performSave(target, true);
+      return;
+    }
+    await performSave(null, true);
+  };
 
   const safeRemoveLocalStorageKey = (key, label) => {
     if (!key) return;
@@ -760,7 +920,7 @@ export default function Editor({
   );
 
   const CM = cmModules ? cmModules.CodeMirror : null;
-  const performSave = async (renameTo) => {
+  const performSave = async (renameTo, overwrite = false) => {
     if (draftTimerRef.current) {
       clearTimeout(draftTimerRef.current);
       draftTimerRef.current = null;
@@ -769,12 +929,21 @@ export default function Editor({
       setErr("Complete the metadata fields before saving.");
       return;
     }
+    if (metaStatus === "draft") {
+      await performDraftSave(renameTo);
+      return;
+    }
     setSaving(true);
     try {
       const targetSlug = isEdit ? slug || "" : fullSlug;
       const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
       let url = endpointPrefix + encodeURI(baseSlug);
-      if (renameTo) url += `?rename_to=${encodeURIComponent(renameTo)}`;
+      if (renameTo || overwrite) {
+        const params = new URLSearchParams();
+        if (renameTo) params.set("rename_to", renameTo);
+        if (overwrite) params.set("overwrite", "1");
+        url += `?${params.toString()}`;
+      }
       const payload = `${frontMatter}${fullContent}`;
       const res = await fetch(url, {
         method: "POST",
@@ -807,8 +976,19 @@ export default function Editor({
         return;
       }
       if (res.status === 409) {
-        setErr("That URL already exists. Choose a different slug.");
-        setSlugError("That URL already exists. Choose a different slug.");
+        const conflictSlug = renameTo || targetSlug;
+        let conflictStatus = null;
+        if (conflictSlug) {
+          const conflict = await checkSlugConflict(conflictSlug);
+          conflictStatus = conflict.status || null;
+          setOverwriteMessage(formatOverwriteMessage(conflictSlug, conflictStatus));
+        } else {
+          setOverwriteMessage("That URL already exists. Overwrite it?");
+        }
+        setOverwriteTarget(renameTo || null);
+        setOverwritePrompt(true);
+        setErr(null);
+        setSlugError(null);
         setShowRenameConfirm(false);
         return;
       }
@@ -821,24 +1001,78 @@ export default function Editor({
     }
   };
 
-  async function slugExists(checkSlug = fullSlug) {
-    try {
-      const checkEndpoint = endpointPrefix + encodeURI(checkSlug);
-      console.log("[slugExists] checking", checkEndpoint);
-      const res = await fetch(checkEndpoint, {
-        method: "GET",
-        cache: "no-store",
-        credentials: "include",
-      });
-      console.log("[slugExists] GET response", res.status, res.ok);
-      const exists = res.ok; 
-      console.log("[slugExists] final exists", exists);
-      return exists;
-    } catch (e) {
-      console.error("[slugExists] error", e);
-      return false;
+  const performDraftSave = async (renameTo) => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
     }
-  }
+    if (!metadataReady) {
+      setErr("Complete the metadata fields before saving.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const targetSlug = isEdit ? slug || "" : fullSlug;
+      const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
+      let url = ROUTES.draft(encodeURIComponent(baseSlug));
+      if (renameTo) {
+        const params = new URLSearchParams();
+        params.set("rename_to", renameTo);
+        url += `?${params.toString()}`;
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        body: fullContent,
+      });
+      if (res.ok) {
+        let finalSlug = fullSlug || (isEdit ? slug || "" : saveSlug);
+        try {
+          const data = await res.json().catch(() => null);
+          if (data && data.slug) finalSlug = data.slug;
+        } catch (e) {
+          console.warn("[Editor] parse draft save response", e);
+        }
+        lastSavedContentRef.current = fullContent;
+        const keyToClear = restoredDraftKeyRef.current || draftKey;
+        safeRemoveLocalStorageKey(keyToClear, "saved draft key");
+        if (
+          restoredDraftKeyRef.current &&
+          restoredDraftKeyRef.current !== draftKey
+        ) {
+          safeRemoveLocalStorageKey(draftKey, "old draft key");
+        }
+        restoredDraftKeyRef.current = null;
+        setStagedDraft(null);
+        setDraftRestored(false);
+        onSaved &&
+          onSaved({ slug: finalSlug, status: "draft", isNew: !isEdit });
+        return;
+      }
+      if (res.status === 409) {
+        setOverwriteMessage("That URL already exists. Overwrite it?");
+        setOverwriteTarget(renameTo || null);
+        setOverwritePrompt(true);
+        setErr(null);
+        setSlugError(null);
+        setShowRenameConfirm(false);
+        return;
+      }
+      const txt = await res.text().catch(() => "");
+      setErr(txt || "Save failed: " + res.status);
+    } catch (e) {
+      setErr("Save failed: network error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!pendingOverwriteSave) return;
+    const target = pendingOverwriteSave.target || null;
+    setPendingOverwriteSave(null);
+    performSave(target, true);
+  }, [pendingOverwriteSave, performSave]);
 
   async function save() {
     await performSave();
@@ -875,7 +1109,7 @@ export default function Editor({
   const hasSlugSeed = Boolean(
     (slugInput || "").trim() || (titleText || "").trim()
   );
-  const shouldAutoSaveDraft = !isEdit && fullContent.trim() !== "";
+  const shouldAutoSaveDraft = fullContent.trim() !== "";
   const ensureDraftSlug = useCallback(
     (ownerValue) => {
       if (draftSlugRef.current) return draftSlugRef.current;
@@ -892,17 +1126,20 @@ export default function Editor({
   const saveDraftNow = useCallback(async () => {
     if (!shouldAutoSaveDraft) return;
     if (fullContent === lastDraftSavedRef.current) return;
+    if (fullContent === (initial || "")) return;
     const ownerValue = (metaCreatedBy || currentUser?.username || "").trim();
-    const draftFrontMatter = buildFrontMatter("draft", ownerValue);
-    if (!draftFrontMatter) return;
-    let targetSlug = hasSlugSeed ? fullSlug : ensureDraftSlug(ownerValue);
+    let targetSlug = isEdit
+      ? fullSlug
+      : hasSlugSeed
+      ? fullSlug
+      : ensureDraftSlug(ownerValue);
     let renameTo = "";
-    if (hasSlugSeed && draftSlugRef.current && draftSlugRef.current !== fullSlug) {
-      renameTo = fullSlug;
+    if (!isEdit && hasSlugSeed && draftSlugRef.current && draftSlugRef.current !== fullSlug) {
+      renameTo = folderMode ? `${fullSlug}/_index` : fullSlug;
       targetSlug = draftSlugRef.current;
     }
     const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
-    let url = endpointPrefix + encodeURI(baseSlug);
+    let url = ROUTES.draft(encodeURIComponent(baseSlug));
     if (renameTo) {
       url += `?rename_to=${encodeURIComponent(renameTo)}`;
     }
@@ -910,7 +1147,7 @@ export default function Editor({
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: `${draftFrontMatter}${fullContent}`,
+        body: fullContent,
       });
       if (res.ok) {
         let nextSlug = renameTo || targetSlug;
@@ -932,14 +1169,14 @@ export default function Editor({
   }, [
     shouldAutoSaveDraft,
     fullContent,
+    initial,
     hasSlugSeed,
     fullSlug,
+    isEdit,
     metaCreatedBy,
     currentUser?.username,
-    buildFrontMatter,
     folderMode,
     ensureDraftSlug,
-    endpointPrefix,
     onDraftAutoSaved,
   ]);
 
@@ -969,25 +1206,28 @@ export default function Editor({
   };
 
   const handleTitleChange = (value) => {
-    const prevTitle = titleText;
     setTitleText(value);
-    if (!isEdit) {
-      const prevDerived = slugify(prevTitle);
-      const newDerived = value && String(value).trim() ? slugify(value) : "";
-      try {
-        if (
-          !slugEditMode ||
-          slugify(slugInput) === prevDerived ||
-          !slugInput ||
-          String(slugInput).trim() === ""
-        ) {
-          setSlugInput(newDerived);
-          setSlugError(null);
-        }
-      } catch (e) {
-        setSlugInput(newDerived);
-      }
+    const trimmed = String(value || "").trim();
+    if (trimmed === "") {
+      autoSlugFromTitleRef.current = true;
+      return;
     }
+    if (!autoSlugFromTitleRef.current || slugEditMode) return;
+    const newDerived = slugify(value);
+    try {
+      setSlugInput(newDerived);
+      setSlugError(null);
+    } catch (e) {
+      setSlugInput(newDerived);
+    }
+  };
+
+  const handleRegenerateSlug = () => {
+    const next = slugify(titleText || "");
+    setSlugInput(next);
+    setSlugError(null);
+    setSlugEditMode(true);
+    autoSlugFromTitleRef.current = false;
   };
 
   const discardDraft = () => {
@@ -995,6 +1235,8 @@ export default function Editor({
     setStagedDraft(null);
     setShowDraftModal(false);
   };
+
+  const overwriteActionLabel = "Yes, overwrite";
 
   return (
     <div
@@ -1017,6 +1259,15 @@ export default function Editor({
           </button>
         </div>
         <div className="editor-header-actions-right">
+          <div
+            className={`editor-presence ${
+              presenceInfo.alert ? "editor-presence-alert" : ""
+            } ${presenceUnavailable ? "editor-presence-muted" : ""}`}
+            title={presenceInfo.title}
+          >
+            <span className="editor-presence-dot" />
+            <span>{presenceInfo.label}</span>
+          </div>
           {stagedDraft && (
             <button
               className="btn btn-secondary btn-sm editor-topbar-action"
@@ -1052,23 +1303,29 @@ export default function Editor({
           <button
             className="btn btn-primary btn-sm editor-topbar-action"
             onClick={async () => {
+              if (metaStatus === "draft") {
+                if (isEdit) {
+                  const targetSlug = normalizedEditSlug;
+                  if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
+                    setRenameTarget(targetSlug);
+                    setShowRenameConfirm(true);
+                    return;
+                  }
+                }
+                await save();
+                return;
+              }
               if (isEdit) {
                 const targetSlug = normalizedEditSlug;
                 if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
-                  try {
-                    const checkEndpoint =
-                      endpointPrefix + encodeURI(targetSlug);
-                    const res = await fetch(checkEndpoint, {
-                      method: "GET",
-                      cache: "no-store",
-                      credentials: "include",
-                    });
-                    if (res.ok) {
-                      setSlugError("That URL is already taken.");
-                      return;
-                    }
-                  } catch (e) {
-                    console.warn("[Editor] slug check", e);
+                  const conflict = await checkSlugConflict(targetSlug);
+                  if (conflict.exists && conflict.conflict) {
+                    setOverwriteMessage(
+                      formatOverwriteMessage(targetSlug, conflict.status)
+                    );
+                    setOverwriteTarget(targetSlug);
+                    setOverwritePrompt(true);
+                    return;
                   }
                   setRenameTarget(targetSlug);
                   setShowRenameConfirm(true);
@@ -1077,11 +1334,13 @@ export default function Editor({
                 await save();
                 return;
               }
-              const exists = await slugExists();
-              if (exists) {
-                setSlugError(
-                  "That URL already exists. Change it to create a new page."
+              const conflict = await checkSlugConflict(fullSlug);
+              if (conflict.exists && conflict.conflict) {
+                setOverwriteMessage(
+                  formatOverwriteMessage(fullSlug, conflict.status)
                 );
+                setOverwriteTarget(null);
+                setOverwritePrompt(true);
                 return;
               }
               await save();
@@ -1149,6 +1408,13 @@ export default function Editor({
               className="input editor-title-input editor-title-input-hero"
               ref={titleInputRef}
               value={titleText}
+              onFocus={() => {
+                autoSlugFromTitleRef.current =
+                  String(titleText || "").trim() === "";
+              }}
+              onBlur={() => {
+                autoSlugFromTitleRef.current = false;
+              }}
               onChange={(e) => handleTitleChange(e.target.value)}
             />
           </label>
@@ -1163,8 +1429,20 @@ export default function Editor({
                   setSlugInput(e.target.value);
                   setSlugError(null);
                   setSlugEditMode(true);
+                  autoSlugFromTitleRef.current = false;
                 }}
               />
+              <button
+                className="btn btn-ghost btn-sm editor-slug-button"
+                type="button"
+                onClick={handleRegenerateSlug}
+                title="Regenerate from title"
+                aria-label="Regenerate URL from title"
+              >
+                <span className="editor-action-icon">
+                  <IconRefresh size={14} />
+                </span>
+              </button>
             </div>
           </label>
         </div>
@@ -1534,23 +1812,20 @@ export default function Editor({
       {overwritePrompt && (
         <ModalShell
           title="Overwrite existing page?"
-          onClose={() => setOverwritePrompt(false)}
+          onClose={closeOverwritePrompt}
           maxWidth={520}
           footer={
             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
               <button
                 className="btn btn-danger"
-                onClick={() => {
-                  setOverwritePrompt(false);
-                  save();
-                }}
+                onClick={confirmOverwrite}
                 disabled={saving}
               >
-                Yes, overwrite
+                {overwriteActionLabel}
               </button>
               <button
                 className="btn btn-ghost"
-                onClick={() => setOverwritePrompt(false)}
+                onClick={closeOverwritePrompt}
                 disabled={saving}
               >
                 No, go back

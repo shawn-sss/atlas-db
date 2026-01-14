@@ -38,11 +38,10 @@ func SyncContentIndex(db *sql.DB) error {
 	}{
 		{contentpath.PublishedRoot, "published"},
 		{contentpath.UnlistedRoot, "unlisted"},
-		{contentpath.DraftsRoot, "draft"},
 	}
 
-	log.Printf("[SyncContentIndex] Starting scan. Roots: published=%s unlisted=%s drafts=%s",
-		contentpath.PublishedRoot, contentpath.UnlistedRoot, contentpath.DraftsRoot)
+	log.Printf("[SyncContentIndex] Starting scan. Roots: published=%s unlisted=%s",
+		contentpath.PublishedRoot, contentpath.UnlistedRoot)
 
 	seen := make(map[string]struct{})
 	var scans []scannedDoc
@@ -232,7 +231,6 @@ func ensureContentIndexFresh(db *sql.DB) {
 	roots := []string{
 		contentpath.PublishedRoot,
 		contentpath.UnlistedRoot,
-		contentpath.DraftsRoot,
 	}
 	for _, root := range roots {
 		if root == "" {

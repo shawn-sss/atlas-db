@@ -21,8 +21,6 @@ func GetRootForStatus(status string) string {
 	switch status {
 	case "unlisted":
 		return UnlistedRoot
-	case "draft":
-		return DraftsRoot
 	default:
 		return PublishedRoot
 	}

@@ -38,7 +38,10 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
         DROP TABLE IF EXISTS audit;
         DROP TABLE IF EXISTS sessions;
         DROP TABLE IF EXISTS history;
+        DROP TABLE IF EXISTS editor_presence;
         DROP TABLE IF EXISTS meta;
+        DROP TABLE IF EXISTS user_preferences;
+        DROP TABLE IF EXISTS user_drafts;
         DROP TABLE IF EXISTS documents_fts;
         `
 		if _, err := db.Exec(drop); err != nil {
@@ -52,10 +55,46 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			httpErr(w, http.StatusInternalServerError, "reinit failed")
 			return
 		}
+		_, _ = db.Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`, "seed_default_content_v1", "nuked")
 
 		_ = os.RemoveAll(contentpath.DocsRoot)
+		removeLegacyPath := func(target string) {
+			targetAbs, err := filepath.Abs(target)
+			if err != nil {
+				return
+			}
+			currentAbs, err := filepath.Abs(contentpath.DocsRoot)
+			if err != nil {
+				return
+			}
+			if targetAbs == currentAbs {
+				return
+			}
+			if info, err := os.Stat(targetAbs); err == nil && info.IsDir() {
+				_ = os.RemoveAll(targetAbs)
+			}
+		}
+		removeLegacyPath(filepath.Clean(filepath.Join("backend", "docs")))
 
 		_ = os.RemoveAll("./data/history")
+		_ = os.RemoveAll("./data/uploads")
+		removeLegacyData := func(target string) {
+			targetAbs, err := filepath.Abs(target)
+			if err != nil {
+				return
+			}
+			currentAbs, err := filepath.Abs("./data")
+			if err != nil {
+				return
+			}
+			if targetAbs == currentAbs {
+				return
+			}
+			if info, err := os.Stat(targetAbs); err == nil && info.IsDir() {
+				_ = os.RemoveAll(targetAbs)
+			}
+		}
+		removeLegacyData(filepath.Clean(filepath.Join("backend", "data")))
 		if !keepBackups {
 
 			_ = os.RemoveAll("./data/backups")
@@ -66,6 +105,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 		_ = os.MkdirAll(contentpath.UnlistedRoot, 0o755)
 		_ = os.MkdirAll(contentpath.DraftsRoot, 0o755)
 		_ = os.MkdirAll("./data/history", 0o755)
+		_ = os.MkdirAll("./data/uploads", 0o755)
 		if !keepBackups {
 			_ = os.MkdirAll("./data/backups", 0o755)
 		}

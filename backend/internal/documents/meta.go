@@ -12,7 +12,6 @@ var (
 	statusValues  = map[string]struct{}{
 		"published": {},
 		"unlisted":  {},
-		"draft":     {},
 	}
 )
 

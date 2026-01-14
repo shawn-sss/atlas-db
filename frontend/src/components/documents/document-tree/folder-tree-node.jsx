@@ -171,6 +171,7 @@ const FolderTreeNode = React.memo(
                       key={child.slug}
                       node={child}
                       level={level + 1}
+                      originLabel={child.originLabel}
                       onSelect={onSelect}
                       activeSlug={activeSlug}
                       onSetStartPage={onSetStartPage}

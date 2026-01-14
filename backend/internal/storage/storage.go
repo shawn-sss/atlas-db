@@ -58,6 +58,14 @@ func InitDB(db *sql.DB) error {
             note TEXT
         );`,
 
+		`CREATE TABLE IF NOT EXISTS editor_presence (
+            slug TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(slug, user_id)
+        );`,
+
 		`CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -71,7 +79,19 @@ func InitDB(db *sql.DB) error {
 			PRIMARY KEY(user_id, key)
 		);`,
 
+		`CREATE TABLE IF NOT EXISTS user_drafts (
+			user_id INTEGER NOT NULL,
+			slug TEXT NOT NULL,
+			title TEXT,
+			path TEXT NOT NULL,
+			parent_slug TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_folder INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(user_id, slug)
+		);`,
+
 		`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(slug, title, body);`,
+		`CREATE INDEX IF NOT EXISTS idx_editor_presence_slug ON editor_presence(slug);`,
 	}
 
 	tx, err := db.Begin()
