@@ -57,7 +57,7 @@ const SetupStage = ({
                     alt={`${brandTitle} icon preview`}
                   />
                 ) : (
-                  <AppIcon size={48} />
+                  <AppIcon size={216} />
                 )}
               </div>
               <div className="workspace-icon-actions">
@@ -65,7 +65,7 @@ const SetupStage = ({
                   Upload icon
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
                     onChange={onIconSelect}
                   />
                 </label>
@@ -74,7 +74,8 @@ const SetupStage = ({
             <div className="muted workspace-icon-hint">
               {iconBusy
                 ? "Uploading icon..."
-                : iconMessage || "Optional square PNG/JPG up to 10MB."}
+                : iconMessage ||
+                  "PNG, JPG, GIF, WEBP, or BMP up to 10MB. Auto-cropped to square."}
             </div>
           </label>
 

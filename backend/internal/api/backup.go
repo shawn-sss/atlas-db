@@ -55,7 +55,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			httpErr(w, http.StatusInternalServerError, "reinit failed")
 			return
 		}
-		_, _ = db.Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`, "seed_default_content_v1", "nuked")
+		_, _ = db.Exec(`DELETE FROM meta WHERE key = ?`, "seed_default_content_v1")
 
 		_ = os.RemoveAll(contentpath.DocsRoot)
 		removeLegacyPath := func(target string) {

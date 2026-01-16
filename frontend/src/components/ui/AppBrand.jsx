@@ -10,7 +10,7 @@ export default function AppBrand({
 }) {
   return (
     <div className={`brand${compact ? " brand-compact" : ""}`}>
-      <AppIcon size={compact ? 38 : 58} src={iconSrc} alt={`${title} icon`} />
+      <AppIcon size={compact ? 114 : 174} src={iconSrc} alt={`${title} icon`} />
       {!compact && (
         <div className="brand-text">
           <div className="brand-title">{title}</div>

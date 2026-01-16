@@ -29,6 +29,15 @@ export default function DocumentSidebar({
   onMove,
   onSetStatus,
 }) {
+  const handleSearchResultSelect = (slug) => {
+    if (onSelect) {
+      onSelect(slug);
+    }
+    if (onSearchChange) {
+      onSearchChange("");
+    }
+  };
+
   return (
     <aside className="doc-sidebar">
       <header className="doc-sidebar-header">
@@ -156,7 +165,7 @@ export default function DocumentSidebar({
                   key={result.doc_id || result.slug}
                   type="button"
                   className="doc-search-result"
-                  onClick={() => onSelect(result.slug)}
+                  onClick={() => handleSearchResultSelect(result.slug)}
                 >
                   <div className="doc-search-result-heading">
                     <strong>{result.title || result.slug}</strong>

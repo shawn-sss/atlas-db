@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Post("/users", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db)).Post("/users", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password, Role string }
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
@@ -79,6 +80,63 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
+	})
+
+	r.With(auth.AuthMiddleware(db)).Get("/users", func(w http.ResponseWriter, r *http.Request) {
+		rows, err := db.Query(`SELECT id, username, role FROM users ORDER BY username`)
+		if err != nil {
+			httpErr(w, http.StatusInternalServerError, "users lookup failed")
+			return
+		}
+		defer rows.Close()
+
+		type userRow struct {
+			ID       int    `json:"id"`
+			Username string `json:"username"`
+			Role     string `json:"role"`
+		}
+		var users []userRow
+		for rows.Next() {
+			var row userRow
+			if err := rows.Scan(&row.ID, &row.Username, &row.Role); err != nil {
+				httpErr(w, http.StatusInternalServerError, "users scan failed")
+				return
+			}
+			users = append(users, row)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(users)
+	})
+
+	r.With(auth.AuthMiddleware(db)).Put("/users/{id}/role", func(w http.ResponseWriter, r *http.Request) {
+		idParam := chi.URLParam(r, "id")
+		userID, err := strconv.Atoi(idParam)
+		if err != nil || userID <= 0 {
+			httpErr(w, http.StatusBadRequest, "invalid user id")
+			return
+		}
+		var req struct{ Role string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpErr(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		role := strings.TrimSpace(req.Role)
+		switch strings.ToLower(role) {
+		case "user":
+			role = "User"
+		case "admin":
+			role = "Admin"
+		case "owner":
+			role = "Owner"
+		default:
+			httpErr(w, http.StatusBadRequest, "invalid role")
+			return
+		}
+		if _, err := db.Exec(`UPDATE users SET role = ? WHERE id = ?`, role, userID); err != nil {
+			httpErr(w, http.StatusInternalServerError, "update role failed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +209,34 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			http.SetCookie(w, cookie)
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	r.With(auth.AuthMiddleware(db)).Get("/active-users", func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		rows, err := db.Query(`SELECT DISTINCT u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.expires_at > ? ORDER BY u.username`, now)
+		if err != nil {
+			httpErr(w, http.StatusInternalServerError, "active users lookup failed")
+			return
+		}
+		defer rows.Close()
+
+		var users []string
+		for rows.Next() {
+			var username string
+			if err := rows.Scan(&username); err != nil {
+				httpErr(w, http.StatusInternalServerError, "active users scan failed")
+				return
+			}
+			username = strings.TrimSpace(username)
+			if username != "" {
+				users = append(users, username)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"count": len(users),
+			"users": users,
+		})
 	})
 
 	r.Get("/me", func(w http.ResponseWriter, r *http.Request) {

@@ -28,8 +28,11 @@ func seedDefaultStructureIfNeeded(db *sql.DB) []string {
 	}
 
 	var seeded sql.NullString
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey).Scan(&seeded); err == nil && strings.TrimSpace(seeded.String) != "" {
-		return nil
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey).Scan(&seeded); err == nil {
+		value := strings.TrimSpace(seeded.String)
+		if value != "" && value != "nuked" {
+			return nil
+		}
 	}
 
 	root := contentpath.PublishedRoot

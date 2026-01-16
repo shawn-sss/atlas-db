@@ -6,6 +6,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/sergi/go-diff v1.4.0
 	golang.org/x/crypto v0.14.0
+	golang.org/x/image v0.14.0
 	modernc.org/sqlite v1.40.1
 )
 

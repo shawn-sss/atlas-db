@@ -22,16 +22,20 @@ export default function SettingsModal({
   onAppIconChange,
   onAppTitleChange,
 }) {
-  const canAdmin = !!user && (user.role === "Admin" || user.role === "Owner");
-  const isOwner = !!user && user.role === "Owner";
   const categories = [
     { id: "account", label: "Account", roles: "all" },
-    { id: "users", label: "Users", roles: "admin" },
-    { id: "workspace", label: "Workspace", roles: "admin_owner" },
-    { id: "backups", label: "Backups", roles: "admin" },
-    { id: "owner", label: "Owner", roles: "owner" },
+    { id: "users", label: "Users", roles: "all" },
+    { id: "workspace", label: "Workspace", roles: "all" },
+    { id: "backups", label: "Backups", roles: "all" },
+    { id: "owner", label: "Owner", roles: "all" },
   ];
-  const [activeCat, setActiveCat] = useState(initialCategory || "account");
+  const normalizeCategory = (nextCat) => {
+    if (!nextCat) return "account";
+    return nextCat;
+  };
+  const [activeCat, setActiveCat] = useState(() =>
+    normalizeCategory(initialCategory || "account")
+  );
   const [userError, setUserError] = useState(null);
   const [createBusy, setCreateBusy] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -40,15 +44,7 @@ export default function SettingsModal({
     role: "User",
   });
   const [nukeBusy, setNukeBusy] = useState(false);
-
-  useEffect(() => {
-    if (!canAdmin && ["users", "backups", "workspace"].includes(activeCat)) {
-      setActiveCat("account");
-    }
-    if (!isOwner && activeCat === "owner") {
-      setActiveCat("account");
-    }
-  }, [activeCat, canAdmin, isOwner]);
+  const [usersRefreshKey, setUsersRefreshKey] = useState(0);
 
   useEffect(() => {
     if (typeof onCategoryChange === "function") {
@@ -58,16 +54,14 @@ export default function SettingsModal({
 
   useEffect(() => {
     if (!initialCategory) return;
-
-    setActiveCat((currentCat) =>
-      currentCat === initialCategory ? currentCat : initialCategory
-    );
+    const nextCat = normalizeCategory(initialCategory);
+    setActiveCat((currentCat) => (currentCat === nextCat ? currentCat : nextCat));
   }, [initialCategory]);
 
   const handleCreateUser = async () => {
     if (!createForm.username || !createForm.password) {
       setUserError("Provide username and password.");
-      return;
+      return false;
     }
     setCreateBusy(true);
     setUserError(null);
@@ -77,8 +71,11 @@ export default function SettingsModal({
         body: createForm,
       });
       setCreateForm({ username: "", password: "", role: "User" });
+      setUsersRefreshKey((prev) => prev + 1);
+      return true;
     } catch (err) {
       setUserError(err.message);
+      return false;
     } finally {
       setCreateBusy(false);
     }
@@ -121,7 +118,7 @@ export default function SettingsModal({
                 key={cat.id}
                 className={`tab ${activeCat === cat.id ? "tab-active" : ""}`}
                 type="button"
-                onClick={() => setActiveCat(cat.id)}
+                onClick={() => setActiveCat(normalizeCategory(cat.id))}
                 title={restricted ? titleText : ""}
                 style={{ textAlign: "left" }}
               >
@@ -161,6 +158,7 @@ export default function SettingsModal({
               onCreateFormChange={handleCreateFormChange}
               onCreateUser={handleCreateUser}
               createBusy={createBusy}
+              refreshKey={usersRefreshKey}
             />
           )}
           {activeCat === "workspace" && (
@@ -172,7 +170,7 @@ export default function SettingsModal({
             />
           )}
           {activeCat === "backups" && (
-            <BackupsSection user={user} canAdmin={canAdmin} />
+            <BackupsSection user={user} canAdmin />
           )}
           {activeCat === "owner" && (
             <OwnerSection

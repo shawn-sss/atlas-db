@@ -149,7 +149,7 @@ export default function WorkspaceOwnerControls({
                   alt={`${title || DEFAULT_APP_TITLE} icon preview`}
                 />
               ) : (
-                <AppIcon size={52} />
+                <AppIcon size={216} />
               )}
             </div>
             <div className="workspace-icon-actions">
@@ -157,7 +157,7 @@ export default function WorkspaceOwnerControls({
                 Upload new icon
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
                   onChange={handleIconSelectChange}
                 />
               </label>
@@ -174,7 +174,8 @@ export default function WorkspaceOwnerControls({
           <div className="muted workspace-icon-hint">
             {iconBusy
               ? "Working..."
-              : iconMsg || "Square PNG/JPG up to 10MB keeps the circle crisp."}
+              : iconMsg ||
+                "PNG, JPG, GIF, WEBP, or BMP up to 10MB. Auto-cropped to square."}
           </div>
         </label>
       </div>

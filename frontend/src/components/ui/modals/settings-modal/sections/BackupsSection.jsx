@@ -8,7 +8,8 @@ export default function BackupsSection({ user, canAdmin }) {
   const [file, setFile] = useState(null);
   const [error, setError] = useState(null);
 
-  const isAdmin = !!user && (user.role === "Admin" || user.role === "Owner");
+  const role = (user?.role || "").toLowerCase();
+  const isAdmin = role === "admin" || role === "owner";
 
   const fetchList = async () => {
     setError(null);

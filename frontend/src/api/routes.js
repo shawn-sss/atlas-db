@@ -7,6 +7,7 @@ const R = {
   bootstrapSeedOwner: "/api/bootstrap/seed-owner",
   setupFinish: "/api/setup/finish",
   users: "/api/users",
+  userRole: (id) => `/api/users/${id}/role`,
   documentsTree: "/api/documents/tree",
   draftsTree: "/api/drafts/tree",
   draft: (slug) => `/api/draft/${slug}`,
@@ -32,6 +33,7 @@ const R = {
   register: "/api/register",
   nuke: "/api/nuke",
   userPrefs: "/api/user/preferences",
+  activeUsers: "/api/active-users",
   uploadImageXHR: "/api/upload-image",
 };
 

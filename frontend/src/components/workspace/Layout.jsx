@@ -6,6 +6,7 @@ import DocumentPreviewHeader from "./DocumentPreviewHeader";
 export default function WorkspaceLayout({
   appTitleText,
   bootstrapInfo = {},
+  activeUsers,
   isOwner,
   onNukeWorkspace,
   onOpenSettings,
@@ -26,6 +27,13 @@ export default function WorkspaceLayout({
     onStartEditing,
     onOpenReader,
   } = editorProps;
+  const activeUserNames = Array.isArray(activeUsers?.users)
+    ? activeUsers.users
+    : [];
+  const activeUserCount =
+    typeof activeUsers?.count === "number"
+      ? activeUsers.count
+      : activeUserNames.length;
 
   return (
     <div className="workspace-shell">
@@ -35,6 +43,24 @@ export default function WorkspaceLayout({
           <div className="topbar-title">{appTitleText}</div>
         </div>
         <div className="workspace-header-actions">
+          <div className="workspace-active-users">
+            <div className="active-users-pill">
+              <span className="active-users-dot" />
+              <span>{activeUserCount} online</span>
+            </div>
+            <div className="active-users-popover" role="tooltip">
+              <div className="active-users-title">Active users</div>
+              {activeUserNames.length ? (
+                <ul className="active-users-list">
+                  {activeUserNames.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="active-users-empty">No active users</div>
+              )}
+            </div>
+          </div>
           {isOwner && (
             <button
               className="btn btn-danger"

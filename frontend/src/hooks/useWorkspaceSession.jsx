@@ -63,6 +63,7 @@ export default function useWorkspaceSession() {
   });
   const [onboardingStep, setOnboardingStep] = useState("splash");
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [activeUsers, setActiveUsers] = useState({ count: 0, users: [] });
   const [showEditor, setShowEditor] = useState(false);
   const [editorDualPane, setEditorDualPane] = useState(false);
   const [editorMode, setEditorMode] = useState("edit");
@@ -81,10 +82,10 @@ export default function useWorkspaceSession() {
   const parentPickerAction = useRef(null);
   const [pendingNewDocParent, setPendingNewDocParent] = useState("");
   const [pendingFolderParent, setPendingFolderParent] = useState("");
-  const isOwner = user?.role === "Owner";
-  const canAdmin = !!user && (user.role === "Admin" || user.role === "Owner");
-  const canRestoreHistory =
-    !!user && (user.role === "Admin" || user.role === "Owner");
+  const role = (user?.role || "").toLowerCase();
+  const isOwner = role === "owner";
+  const canAdmin = role === "admin" || role === "owner";
+  const canRestoreHistory = role === "admin" || role === "owner";
   const [historyEntries, setHistoryEntries] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
@@ -591,6 +592,38 @@ export default function useWorkspaceSession() {
     }
   }, []);
 
+  const fetchActiveUsers = useCallback(async (signal) => {
+    try {
+      const data = await apiFetch(ROUTES.activeUsers, { signal });
+      if (signal?.aborted) return;
+      const users = Array.isArray(data?.users) ? data.users : [];
+      const count =
+        typeof data?.count === "number" ? data.count : users.length;
+      setActiveUsers({ count, users });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setActiveUsers({ count: 0, users: [] });
+      return;
+    }
+    let controller;
+    const runFetch = () => {
+      if (controller) controller.abort();
+      controller = new AbortController();
+      fetchActiveUsers(controller.signal);
+    };
+    runFetch();
+    const intervalId = setInterval(runFetch, 20000);
+    return () => {
+      if (controller) controller.abort();
+      clearInterval(intervalId);
+    };
+  }, [user, fetchActiveUsers]);
+
   const loadDrafts = useCallback(async () => {
     if (draftAbortRef.current) {
       draftAbortRef.current.abort();
@@ -677,6 +710,9 @@ export default function useWorkspaceSession() {
       if (!normalizedSlug) return;
       const useDraft = sectionFilter === "drafts";
       closeEditor();
+      if (!useDraft) {
+        expandParentsForSlug(normalizedSlug);
+      }
       if (normalizedSlug === selectedSlug) {
         if (useDraft) {
           setSelectedDoc(null);
@@ -712,6 +748,7 @@ export default function useWorkspaceSession() {
     },
     [
       defaultStartPageSlug,
+      expandParentsForSlug,
       openDocument,
       openDraft,
       selectedDoc,
@@ -2097,6 +2134,7 @@ export default function useWorkspaceSession() {
     <WorkspaceLayout
       appTitleText={appTitleText}
       bootstrapInfo={bootstrapInfo}
+      activeUsers={activeUsers}
       isOwner={isOwner}
       onNukeWorkspace={handleNukeWorkspace}
       onOpenSettings={() => setShowSettings(true)}

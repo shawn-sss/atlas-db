@@ -203,7 +203,7 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusBadRequest, "invalid image file")
 			return
 		}
-		url, _, err := storeUploadedImage(file, sniff[:n])
+		url, _, err := storeUploadedIcon(file, sniff[:n])
 		if err != nil {
 			if errors.Is(err, errUnsupportedImageType) {
 				httpErr(w, http.StatusBadRequest, "unsupported image type")
