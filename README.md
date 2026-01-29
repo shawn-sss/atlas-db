@@ -35,5 +35,11 @@ Atlas DB is a lightweight, self-hosted knowledge base built for teams that want 
 
 The easiest way to start Atlas DB in development is:
 
+(Windows)
 ```powershell
 ./start.ps1
+```
+(Linux)
+```bash
+./start.sh
+```
