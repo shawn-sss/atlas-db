@@ -1,7 +1,7 @@
 # Atlas DB
 
 <p align="center">
-  <img src="screenshot.jpg" alt="screenshot">
+  <img width="1200" height="475" src="screenshot.jpg" alt="Screenshot">
 </p>
 
 Atlas DB is a lightweight, self-hosted knowledge base built for teams that want a fast, modern wiki without the clutter. It combines a clean Markdown editor with powerful navigation and search, plus simple backup and restore to keep everything safe. Your content lives as plain .md files on disk—easy to edit, version, and sync—while a small companion database handles indexing and workspace features like history, navigation, and settings.
