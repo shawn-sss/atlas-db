@@ -114,9 +114,18 @@ func Run() {
 		uploadsFS.ServeHTTP(w, r)
 	}))
 
-	dist := filepath.Clean("../frontend/dist")
-	if _, err := os.Stat(dist); os.IsNotExist(err) {
-		dist = filepath.Clean("./frontend/dist")
+	distCandidates := []string{
+		filepath.Clean("../client/dist"),
+		filepath.Clean("./client/dist"),
+		filepath.Clean("../frontend/dist"),
+		filepath.Clean("./frontend/dist"),
+	}
+	dist := distCandidates[0]
+	for _, candidate := range distCandidates {
+		if _, err := os.Stat(candidate); err == nil {
+			dist = candidate
+			break
+		}
 	}
 	staticFS := http.FileServer(http.Dir(dist))
 	r.Handle("/assets/*", staticFS)

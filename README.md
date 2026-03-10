@@ -19,8 +19,8 @@ Atlas DB is a lightweight, self-hosted knowledge base built for teams that want 
 
 ## Tech Stack
 
-- **Frontend:** React + Vite  
-- **Backend:** Go + SQLite
+- **Client:** React + Vite  
+- **Server:** Go + SQLite
 - **Data:** Markdown files on disk
 - **Editor:** Markdown-powered (CodeMirror)  
 
@@ -33,13 +33,20 @@ Atlas DB is a lightweight, self-hosted knowledge base built for teams that want 
 
 ### Run locally
 
-The easiest way to start Atlas DB in development is:
+Install dependencies and download modules:
 
-(Windows)
-```powershell
-./start.ps1
-```
-(Linux)
 ```bash
-./start.sh
+node scripts/bootstrap.js
+```
+
+Start the server and client together in development:
+
+```bash
+node scripts/run-dev.js
+```
+
+Build the client bundle and server binary:
+
+```bash
+node scripts/run-build.js
 ```

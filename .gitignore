@@ -39,9 +39,13 @@ pnp-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.pid
+*.pid.lock
 
 # Node.js
 node_modules/
+.eslintcache
+.npm/
 
 # Secrets/env
 .env
@@ -50,18 +54,21 @@ node_modules/
 *.key
 *.p12
 *.pem
+.envrc
+.direnv/
 
-# Frontend (Node / Vite)
-/frontend/.cache/
-/frontend/.env.*.local
-/frontend/.env.local
-/frontend/.eslintcache
-/frontend/.turbo/
-/frontend/.vite/
-/frontend/dist/
-/frontend/node_modules/
+# Client (Node / Vite)
+/client/.cache/
+/client/.env.*.local
+/client/.env.local
+/client/.eslintcache
+/client/.turbo/
+/client/.vite/
+/client/coverage/
+/client/dist/
+/client/node_modules/
 
-# Backend (Go)
+# Server (Go)
 *.dll
 *.dylib
 *.exe
@@ -69,19 +76,39 @@ node_modules/
 *.out
 *.so
 *.test
+/server/coverage.out
+/server/*.coverprofile
+/server/bin/
+/server/build/
+/server/dist/
+
+# Server runtime data
+/server/data/
+/server/data/*.db
+/server/data/*.sqlite
+/server/data/*.sqlite3
+/server/data/app.db
+/server/data/backups/
+/server/data/history/
+/server/data/uploads/
+
+# Server generated docs
+/server/docs/
+
+# Legacy layout artifacts kept during the backend/frontend -> server/client rename
+/frontend/.cache/
+/frontend/.env.*.local
+/frontend/.env.local
+/frontend/.eslintcache
+/frontend/.turbo/
+/frontend/.vite/
+/frontend/coverage/
+/frontend/dist/
+/frontend/node_modules/
 /backend/bin/
 /backend/build/
+/backend/coverage.out
+/backend/*.coverprofile
 /backend/dist/
-
-# Backend runtime data
 /backend/data/
-/backend/data/*.db
-/backend/data/*.sqlite
-/backend/data/*.sqlite3
-/backend/data/app.db
-/backend/data/backups/
-/backend/data/history/
-/backend/data/uploads/
-
-# Backend generated docs
 /backend/docs/

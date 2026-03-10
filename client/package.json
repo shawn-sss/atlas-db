@@ -1,5 +1,5 @@
 {
-  "name": "atlas-db-frontend",
+  "name": "atlas-db-client",
   "version": "0.1.0",
   "private": true,
   "scripts": {

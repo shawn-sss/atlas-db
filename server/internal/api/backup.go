@@ -74,7 +74,12 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 				_ = os.RemoveAll(targetAbs)
 			}
 		}
-		removeLegacyPath(filepath.Clean(filepath.Join("backend", "docs")))
+		for _, legacyDocsPath := range []string{
+			filepath.Clean(filepath.Join("..", "backend", "docs")),
+			filepath.Clean(filepath.Join("backend", "docs")),
+		} {
+			removeLegacyPath(legacyDocsPath)
+		}
 
 		_ = os.RemoveAll("./data/history")
 		_ = os.RemoveAll("./data/uploads")
@@ -94,7 +99,12 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 				_ = os.RemoveAll(targetAbs)
 			}
 		}
-		removeLegacyData(filepath.Clean(filepath.Join("backend", "data")))
+		for _, legacyDataPath := range []string{
+			filepath.Clean(filepath.Join("..", "backend", "data")),
+			filepath.Clean(filepath.Join("backend", "data")),
+		} {
+			removeLegacyData(legacyDataPath)
+		}
 		if !keepBackups {
 
 			_ = os.RemoveAll("./data/backups")
