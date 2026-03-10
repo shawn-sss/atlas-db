@@ -20,7 +20,6 @@ func FinalizeRestore(stageDir string) error {
 
 	ts := time.Now().Format("20060102T150405")
 
-	
 	stagedDocs := filepath.Join(stageDir, "docs")
 	if info, err := os.Stat(stagedDocs); err == nil && info.IsDir() {
 		current := contentpath.DocsRoot
@@ -37,16 +36,15 @@ func FinalizeRestore(stageDir string) error {
 		_ = os.RemoveAll(backup)
 	}
 
-	
 	stagedContent := filepath.Join(stageDir, "content")
 	if info, err := os.Stat(stagedContent); err == nil && info.IsDir() {
-		
+
 		oldDocs := filepath.Join(stagedContent, "docs")
 		if _, err := os.Stat(oldDocs); err == nil {
-			if err := os.MkdirAll(contentpath.PublishedRoot, 0o755); err != nil {
+			if err := contentpath.EnsureDirs(contentpath.PublishedRoot); err != nil {
 				return fmt.Errorf("create published folder: %w", err)
 			}
-			
+
 			filepath.WalkDir(oldDocs, func(path string, d os.DirEntry, err error) error {
 				if err != nil || d.IsDir() {
 					return nil
@@ -64,7 +62,7 @@ func FinalizeRestore(stageDir string) error {
 		}
 	}
 
-	dbDst := filepath.Join(".", "data", "app.db")
+	dbDst := contentpath.DatabasePath
 	stagedDB := filepath.Join(stageDir, "app.db")
 	if _, err := os.Stat(stagedDB); err == nil {
 		if _, err := os.Stat(dbDst); err == nil {
@@ -87,7 +85,7 @@ func FinalizeRestore(stageDir string) error {
 
 	stagedHistory := filepath.Join(stageDir, "history")
 	if _, err := os.Stat(stagedHistory); err == nil {
-		dst := filepath.Join(".", "data", "history")
+		dst := contentpath.HistoryRoot
 		backup := dst + ".old." + ts
 		if _, err := os.Stat(dst); err == nil {
 			if err := os.Rename(dst, backup); err != nil {

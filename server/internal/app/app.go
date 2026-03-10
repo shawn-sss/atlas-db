@@ -16,6 +16,7 @@ import (
 
 	"atlas/internal/api"
 	"atlas/internal/contentpath"
+	"atlas/internal/dbutil"
 	"atlas/internal/documents"
 	"atlas/internal/httpx"
 	"atlas/internal/restore"
@@ -29,16 +30,12 @@ import (
 func Run() {
 	docsRoot := resolveDocsRoot()
 	contentpath.SetRoots(docsRoot)
-	os.MkdirAll(contentpath.DocsRoot, 0o755)
-	os.MkdirAll(contentpath.PublishedRoot, 0o755)
-	os.MkdirAll(contentpath.UnlistedRoot, 0o755)
-	os.MkdirAll(contentpath.DraftsRoot, 0o755)
+	if err := contentpath.EnsureRuntimeDirs(); err != nil {
+		log.Fatalf("ensure runtime dirs: %v", err)
+	}
 	migrateContentToDocs()
 
-	base := filepath.Clean("./data")
-	os.MkdirAll(base, 0o755)
-	os.MkdirAll(filepath.Join(base, "uploads"), 0o755)
-	dbPath := filepath.Join(base, "app.db")
+	dbPath := contentpath.DatabasePath
 	if os.Getenv("RESET_DB") == "1" {
 		if err := os.Remove(dbPath); err == nil {
 			log.Printf("removed existing database %s", dbPath)
@@ -63,22 +60,21 @@ func Run() {
 		log.Fatalf("init db: %v", err)
 	}
 
-	var setupComplete string
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'setup_complete'`).Scan(&setupComplete); err != nil {
+	setupComplete, err := dbutil.ScalarOrZero[string](db, `SELECT value FROM meta WHERE key = 'setup_complete'`)
+	if err != nil {
 		setupComplete = ""
 	}
-	var usersCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM users`).Scan(&usersCount); err != nil {
+	usersCount, err := dbutil.Scalar[int](db, `SELECT COUNT(1) FROM users`)
+	if err != nil {
 		usersCount = 0
 	}
-	var docsCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&docsCount); err != nil {
+	docsCount, err := dbutil.Scalar[int](db, `SELECT COUNT(1) FROM documents`)
+	if err != nil {
 		docsCount = 0
 	}
 
 	diskDocCount := countDocsOnDisk()
 
-	
 	shouldSync := (setupComplete == "1" || usersCount > 0) || docsCount == 0 || diskDocCount > docsCount
 	if shouldSync {
 		log.Printf("Syncing content index...")
@@ -106,8 +102,7 @@ func Run() {
 	api.RegisterRoutes(apiRouter, db, restoreCh)
 	r.Mount("/api", apiRouter)
 
-	uploadsDir := filepath.Clean("./data/uploads")
-	os.MkdirAll(uploadsDir, 0o755)
+	uploadsDir := contentpath.UploadsRoot
 	uploadsFS := http.StripPrefix("/uploads/", http.FileServer(http.Dir(uploadsDir)))
 	r.Handle("/uploads/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -227,7 +222,7 @@ func resolveDocsRoot() string {
 }
 
 func migrateContentToDocs() {
-	
+
 	oldPaths := []string{
 		filepath.Clean("content/docs"),
 		filepath.Clean(filepath.Join("..", "content", "docs")),
@@ -236,7 +231,7 @@ func migrateContentToDocs() {
 		if info, err := os.Stat(oldPath); err != nil || !info.IsDir() {
 			continue
 		}
-		
+
 		_ = filepath.WalkDir(oldPath, func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
@@ -247,7 +242,7 @@ func migrateContentToDocs() {
 			}
 			dst := filepath.Join(contentpath.PublishedRoot, rel)
 			if _, err := os.Stat(dst); err == nil {
-				
+
 				return nil
 			}
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

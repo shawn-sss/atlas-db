@@ -259,7 +259,7 @@ func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusBadRequest, "missing slug")
 			return
 		}
-		
+
 		var dbStatus sql.NullString
 		db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&dbStatus)
 		docStatus := "published"
@@ -366,7 +366,6 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		allowOverwrite := overwriteParam == "1" || overwriteParam == "true" || overwriteParam == "yes"
 		renToRaw := strings.TrimSpace(r.URL.Query().Get("rename_to"))
 
-		
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			httpx.WriteError(w, http.StatusBadRequest, "READ_DOCUMENT_FAILED", err.Error())
@@ -375,7 +374,6 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		content := string(body)
 		meta, _ := parseDocumentMetadata(content)
 
-		
 		var metadataErr error
 		content, metadataErr = ensureDocumentMetadata(content, &meta, auth.UserFromContext(r))
 		if metadataErr != nil {
@@ -383,7 +381,6 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		
 		if meta.ID == "" {
 			meta.ID = "doc-" + random.GenerateToken(12)
 			if updated, changed := ensureFrontMatterID(content, meta.ID); changed {
@@ -449,10 +446,8 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 
 		body = []byte(content)
 
-		
 		currentPath, currentStatus, _ := findDocumentPath(slug, targetHub)
 
-		
 		isNew := false
 		if _, err := os.Stat(currentPath); os.IsNotExist(err) {
 			isNew = true
@@ -462,14 +457,12 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		
 		targetPath, err := docPathFromSlugWithHint(slug, meta.Status, targetHub)
 		if err != nil {
 			docErr(w, http.StatusBadRequest, "invalid slug")
 			return
 		}
 
-		
 		if !isNew && (currentStatus != meta.Status || currentPath != targetPath) {
 			targetPath, err = moveDocumentToStatus(currentPath, slug, meta.Status, targetHub)
 			if err != nil {
@@ -718,7 +711,6 @@ func documentDeleteHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		
 		path, _, err := findDocumentPath(slug, explicitIndex)
 		if err != nil {
 			docErr(w, http.StatusBadRequest, "invalid slug")
@@ -870,7 +862,7 @@ func moveDocumentHandler(db *sql.DB) http.HandlerFunc {
 
 		if isFolder {
 			oldDir := filepath.Dir(root.Path)
-			
+
 			var status sql.NullString
 			db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status)
 			docStatus := "published"
@@ -910,7 +902,7 @@ func moveDocumentHandler(db *sql.DB) http.HandlerFunc {
 				docErr(w, http.StatusNotFound, "source not found")
 				return
 			}
-			
+
 			var status sql.NullString
 			db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status)
 			docStatus := "published"
@@ -1618,9 +1610,8 @@ func cleanSlugParam(raw string) string {
 	return s
 }
 
-
 func findDocumentPath(slug string, preferIndexForNew bool) (string, string, error) {
-	
+
 	statuses := []string{"published", "unlisted"}
 	for _, status := range statuses {
 		path, err := docPathFromSlugWithHint(slug, status, preferIndexForNew)
@@ -1631,11 +1622,10 @@ func findDocumentPath(slug string, preferIndexForNew bool) (string, string, erro
 			return path, status, nil
 		}
 	}
-	
+
 	path, err := docPathFromSlugWithHint(slug, "published", preferIndexForNew)
 	return path, "published", err
 }
-
 
 func moveDocumentToStatus(oldPath string, slug string, newStatus string, preferIndex bool) (string, error) {
 	newPath, err := docPathFromSlugWithHint(slug, newStatus, preferIndex)
@@ -1645,15 +1635,15 @@ func moveDocumentToStatus(oldPath string, slug string, newStatus string, preferI
 	if oldPath == newPath {
 		return newPath, nil
 	}
-	
+
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
 		return "", err
 	}
-	
+
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return "", err
 	}
-	
+
 	oldDir := filepath.Dir(oldPath)
 	if entries, err := os.ReadDir(oldDir); err == nil && len(entries) == 0 {
 		_ = os.Remove(oldDir)
@@ -1834,8 +1824,8 @@ func recordHistory(db *sql.DB, slug, note string, data []byte) {
 
 func historyFilePath(slug string) (string, error) {
 	ts := time.Now().UTC().Format("20060102_150405.000000000")
-	base := filepath.Join("./data/history", ts)
-	if err := os.MkdirAll(base, 0o755); err != nil {
+	base := filepath.Join(contentpath.HistoryRoot, ts)
+	if err := contentpath.EnsureDirs(base); err != nil {
 		return "", err
 	}
 	clean := strings.TrimSpace(slug)
@@ -1850,13 +1840,7 @@ func historyFilePath(slug string) (string, error) {
 	if !strings.HasSuffix(strings.ToLower(name), ".md") {
 		name += ".md"
 	}
-	path := filepath.Join(base, name)
-	absBase, _ := filepath.Abs(base)
-	absPath, _ := filepath.Abs(path)
-	if absPath != absBase && !strings.HasPrefix(absPath, absBase+string(os.PathSeparator)) {
-		return "", fmt.Errorf("invalid history path")
-	}
-	return path, nil
+	return contentpath.ResolveWithinBase(base, name)
 }
 
 func sanitizeSnippet(raw string) string {

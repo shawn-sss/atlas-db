@@ -1,5 +1,5 @@
 import React from "react";
-import AppIcon from "../ui/icons/app-icon";
+import AppIcon, { APP_ICON_SIZES } from "../ui/icons/app-icon";
 import Banner from "../ui/Banner";
 import { COMMON_TIMEZONES } from "../../constants/timezones";
 
@@ -51,14 +51,11 @@ const SetupStage = ({
             <span>Workspace icon</span>
             <div className="workspace-icon-field">
               <div className="workspace-icon-preview">
-                {appIconPreview ? (
-                  <img
-                    src={appIconPreview}
-                    alt={`${brandTitle} icon preview`}
-                  />
-                ) : (
-                  <AppIcon size={216} />
-                )}
+                <AppIcon
+                  size={APP_ICON_SIZES.preview}
+                  src={appIconPreview}
+                  alt={`${brandTitle} icon preview`}
+                />
               </div>
               <div className="workspace-icon-actions">
                 <label className="btn btn-secondary btn-sm workspace-icon-upload">

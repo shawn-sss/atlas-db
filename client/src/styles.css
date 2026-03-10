@@ -726,6 +726,9 @@ code {
 .brand {
   padding: 6px 6px 14px 6px;
 }
+.brand.brand-compact {
+  padding: 0;
+}
 .app-icon {
   position: relative;
   border-radius: 50%;
@@ -792,31 +795,23 @@ code {
 
 .workspace-icon-field {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 12px;
   flex-wrap: wrap;
 }
 .workspace-icon-preview {
-  width: 216px;
-  height: 216px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  background: var(--panel);
+  width: 112px;
+  height: 112px;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
-}
-.workspace-icon-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 .workspace-icon-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: flex-end;
+  align-self: flex-end;
 }
 .workspace-icon-upload {
   position: relative;
@@ -1952,20 +1947,6 @@ select.input option {
 .btn-danger:hover {
   box-shadow: 0 14px 24px rgba(239, 68, 68, 0.35);
 }
-.btn-danger[aria-label="Nuke all"] {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.btn-danger[aria-label="Nuke all"] svg {
-  background: var(--panel);
-  border-radius: 50%;
-  padding: 4px;
-  color: var(--danger);
-  width: 32px;
-  height: 32px;
-}
-
 .btn-sm {
   padding: var(--space-xs) var(--space-sm);
   border-radius: 10px;
@@ -2890,7 +2871,7 @@ select.input option {
 .workspace-header-brand {
   display: flex;
   align-items: center;
-  gap: var(--space-lg);
+  gap: var(--space-md);
 }
 
 .workspace-breadcrumbs {

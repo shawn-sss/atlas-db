@@ -1,5 +1,5 @@
 import React from "react";
-import AppIcon from "./icons/app-icon";
+import AppIcon, { APP_ICON_SIZES } from "./icons/app-icon";
 import { DEFAULT_APP_TITLE } from "../../constants/defaults";
 
 export default function AppBrand({
@@ -10,7 +10,11 @@ export default function AppBrand({
 }) {
   return (
     <div className={`brand${compact ? " brand-compact" : ""}`}>
-      <AppIcon size={compact ? 114 : 174} src={iconSrc} alt={`${title} icon`} />
+      <AppIcon
+        size={compact ? APP_ICON_SIZES.compact : APP_ICON_SIZES.brand}
+        src={iconSrc}
+        alt={`${title} icon`}
+      />
       {!compact && (
         <div className="brand-text">
           <div className="brand-title">{title}</div>

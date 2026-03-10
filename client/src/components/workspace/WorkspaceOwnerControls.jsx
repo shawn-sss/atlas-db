@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import AppIcon from "../ui/icons/app-icon";
+import AppIcon, { APP_ICON_SIZES } from "../ui/icons/app-icon";
 import { apiFetch } from "../../api/client";
 import ROUTES from "../../api/routes";
 import { DEFAULT_APP_TITLE } from "../../constants/defaults";
@@ -143,14 +143,11 @@ export default function WorkspaceOwnerControls({
           <span>Workspace icon</span>
           <div className="workspace-icon-field">
             <div className="workspace-icon-preview">
-              {iconPreview ? (
-                <img
-                  src={iconPreview}
-                  alt={`${title || DEFAULT_APP_TITLE} icon preview`}
-                />
-              ) : (
-                <AppIcon size={216} />
-              )}
+              <AppIcon
+                size={APP_ICON_SIZES.preview}
+                src={iconPreview}
+                alt={`${title || DEFAULT_APP_TITLE} icon preview`}
+              />
             </div>
             <div className="workspace-icon-actions">
               <label className="btn btn-secondary btn-sm workspace-icon-upload">

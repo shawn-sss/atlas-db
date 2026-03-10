@@ -2,14 +2,11 @@ import React, { useEffect, useState } from "react";
 import { apiFetch } from "../../../../../api/client";
 import ROUTES from "../../../../../api/routes";
 
-export default function BackupsSection({ user, canAdmin }) {
+export default function BackupsSection({ canAdmin }) {
   const [list, setList] = useState([]);
   const [busy, setBusy] = useState(false);
   const [file, setFile] = useState(null);
   const [error, setError] = useState(null);
-
-  const role = (user?.role || "").toLowerCase();
-  const isAdmin = role === "admin" || role === "owner";
 
   const fetchList = async () => {
     setError(null);
@@ -154,7 +151,7 @@ export default function BackupsSection({ user, canAdmin }) {
                 >
                   Download
                 </a>
-                {isAdmin && (
+                {canAdmin && (
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => restore(f)}

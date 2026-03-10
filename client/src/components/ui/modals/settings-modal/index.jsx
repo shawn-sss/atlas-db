@@ -10,6 +10,7 @@ import UsersSection from "./sections/UsersSection";
 import WorkspaceSection from "./sections/WorkspaceSection";
 import BackupsSection from "./sections/BackupsSection";
 import OwnerSection from "./sections/OwnerSection";
+import { hasAdminAccess } from "../../../../utils/userRoles";
 
 export default function SettingsModal({
   user,
@@ -45,6 +46,7 @@ export default function SettingsModal({
   });
   const [nukeBusy, setNukeBusy] = useState(false);
   const [usersRefreshKey, setUsersRefreshKey] = useState(0);
+  const canAdmin = hasAdminAccess(user);
 
   useEffect(() => {
     if (typeof onCategoryChange === "function") {
@@ -170,7 +172,7 @@ export default function SettingsModal({
             />
           )}
           {activeCat === "backups" && (
-            <BackupsSection user={user} canAdmin />
+            <BackupsSection canAdmin={canAdmin} />
           )}
           {activeCat === "owner" && (
             <OwnerSection

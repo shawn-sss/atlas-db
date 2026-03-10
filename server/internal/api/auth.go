@@ -2,9 +2,7 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,7 +10,7 @@ import (
 	"time"
 
 	"atlas/internal/auth"
-	"atlas/internal/random"
+	"atlas/internal/httpx"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -27,7 +25,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		}
 
 		var req struct{ Username, Password string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -36,28 +34,20 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusBadRequest, "missing fields")
 			return
 		}
-
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-		if err != nil {
-			httpErr(w, http.StatusInternalServerError, "hash error")
-			return
-		}
-		if _, err := db.Exec(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)`, req.Username, hash, "User"); err != nil {
-
-			msg := strings.ToLower(err.Error())
-			if strings.Contains(msg, "unique") || strings.Contains(msg, "constraint") {
+		if _, err := createUserRecord(db, req.Username, req.Password, "User"); err != nil {
+			if isUniqueConstraintError(err) {
 				httpErr(w, http.StatusConflict, "username already exists")
 				return
 			}
 			httpErr(w, http.StatusInternalServerError, "create user failed")
 			return
 		}
-		w.WriteHeader(http.StatusCreated)
+		httpx.WriteJSON(w, http.StatusCreated, nil)
 	})
 
 	r.With(auth.AuthMiddleware(db)).Post("/users", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password, Role string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -66,20 +56,20 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusBadRequest, "missing fields")
 			return
 		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-		if err != nil {
-			httpErr(w, http.StatusInternalServerError, "hash error")
+		role, ok := normalizeUserRole(req.Role, "User")
+		if !ok {
+			httpErr(w, http.StatusBadRequest, "invalid role")
 			return
 		}
-		role := req.Role
-		if role == "" {
-			role = "User"
-		}
-		if _, err := db.Exec(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)`, req.Username, hash, role); err != nil {
+		if _, err := createUserRecord(db, req.Username, req.Password, role); err != nil {
+			if isUniqueConstraintError(err) {
+				httpErr(w, http.StatusConflict, "username already exists")
+				return
+			}
 			httpErr(w, http.StatusInternalServerError, "create user failed")
 			return
 		}
-		w.WriteHeader(http.StatusCreated)
+		httpx.WriteJSON(w, http.StatusCreated, nil)
 	})
 
 	r.With(auth.AuthMiddleware(db)).Get("/users", func(w http.ResponseWriter, r *http.Request) {
@@ -104,8 +94,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			}
 			users = append(users, row)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(users)
+		httpx.WriteJSON(w, http.StatusOK, users)
 	})
 
 	r.With(auth.AuthMiddleware(db)).Put("/users/{id}/role", func(w http.ResponseWriter, r *http.Request) {
@@ -116,19 +105,12 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 		var req struct{ Role string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		role := strings.TrimSpace(req.Role)
-		switch strings.ToLower(role) {
-		case "user":
-			role = "User"
-		case "admin":
-			role = "Admin"
-		case "owner":
-			role = "Owner"
-		default:
+		role, ok := normalizeUserRole(req.Role, "")
+		if !ok {
 			httpErr(w, http.StatusBadRequest, "invalid role")
 			return
 		}
@@ -136,12 +118,15 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusInternalServerError, "update role failed")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 
 	r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
 		var creds struct{ Username, Password string }
-		json.NewDecoder(r.Body).Decode(&creds)
+		if err := httpx.ReadJSON(r, &creds); err != nil {
+			httpErr(w, http.StatusBadRequest, "invalid json")
+			return
+		}
 		creds.Username = strings.TrimSpace(creds.Username)
 		row := db.QueryRow("SELECT id,password_hash,role FROM users WHERE username = ?", creds.Username)
 		var id int
@@ -155,39 +140,28 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusUnauthorized, "invalid")
 			return
 		}
-		token := random.GenerateToken(32)
-		expires := time.Now().Add(7 * 24 * time.Hour)
-		_, err := db.Exec(`INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)`, token, id, expires.Format(time.RFC3339))
+		token, expires, err := createSessionRecord(db, int64(id))
 		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "session error")
 			return
 		}
-		cookie := &http.Cookie{Name: "session_token", Value: token, Path: "/", Expires: expires, HttpOnly: true, SameSite: http.SameSiteLaxMode}
-		http.SetCookie(w, cookie)
-		json.NewEncoder(w).Encode(map[string]any{"id": id, "username": creds.Username, "role": role})
+		writeSessionCookie(w, token, expires)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": id, "username": creds.Username, "role": role})
 	})
 
 	r.With(auth.AuthMiddleware(db)).Post("/upload-image", func(w http.ResponseWriter, r *http.Request) {
+		upload, ok := parseMultipartUploadOrRespond(w, r, 10<<20, uploadErrorMessages{
+			invalidFormData: "invalid form data",
+			missingUpload:   "missing file",
+			invalidFile:     "invalid image file",
+			serverError:     "server error",
+		})
+		if !ok {
+			return
+		}
+		defer upload.File.Close()
 
-		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			httpErr(w, http.StatusBadRequest, "invalid form data")
-			return
-		}
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			httpErr(w, http.StatusBadRequest, "missing file")
-			return
-		}
-		defer file.Close()
-
-		sniff := make([]byte, 512)
-		n, err := io.ReadFull(file, sniff)
-		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			httpErr(w, http.StatusBadRequest, "invalid image file")
-			return
-		}
-		url, mimeType, err := storeUploadedImage(file, sniff[:n])
+		url, mimeType, err := storeUploadedImage(upload.File, upload.Sniff)
 		if err != nil {
 			if errors.Is(err, errUnsupportedImageType) {
 				httpErr(w, http.StatusBadRequest, "unsupported image type")
@@ -197,18 +171,16 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"url": url, "mime": mimeType})
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"url": url, "mime": mimeType})
 	})
 
 	r.Post("/logout", func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie("session_token")
 		if err == nil {
 			db.Exec(`DELETE FROM sessions WHERE token = ?`, c.Value)
-			cookie := &http.Cookie{Name: "session_token", Value: "", Path: "/", Expires: time.Unix(0, 0), HttpOnly: true}
-			http.SetCookie(w, cookie)
+			clearSessionCookie(w)
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 
 	r.With(auth.AuthMiddleware(db)).Get("/active-users", func(w http.ResponseWriter, r *http.Request) {
@@ -232,8 +204,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 				users = append(users, username)
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"count": len(users),
 			"users": users,
 		})
@@ -242,10 +213,9 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 	r.Get("/me", func(w http.ResponseWriter, r *http.Request) {
 		u, err := auth.GetUserFromRequest(r, db)
 		if err != nil || u == nil {
-			w.WriteHeader(http.StatusNoContent)
+			httpx.WriteJSON(w, http.StatusNoContent, nil)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": u.ID, "username": u.Username, "role": u.Role})
 	})
 }

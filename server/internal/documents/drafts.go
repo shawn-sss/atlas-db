@@ -13,6 +13,7 @@ import (
 
 	"atlas/internal/auth"
 	"atlas/internal/contentpath"
+	"atlas/internal/dbutil"
 	"atlas/internal/httpx"
 
 	"github.com/go-chi/chi/v5"
@@ -184,12 +185,13 @@ func draftSaveHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		if renameTo != "" && renameTo != slug {
-			var exists int
-			if err := db.QueryRow(
+			exists, err := dbutil.Scalar[int](
+				db,
 				`SELECT COUNT(1) FROM user_drafts WHERE user_id = ? AND slug = ?`,
 				u.ID,
 				renameTo,
-			).Scan(&exists); err != nil {
+			)
+			if err != nil {
 				docErr(w, http.StatusInternalServerError, "query error")
 				return
 			}

@@ -8,14 +8,26 @@ import (
 )
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if status == http.StatusNoContent {
+	if payload == nil {
+		WriteRawJSON(w, status, nil)
 		return
 	}
-	if payload != nil {
-		_ = json.NewEncoder(w).Encode(payload)
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "JSON_ENCODE_FAILED", "json encode failed")
+		return
 	}
+	WriteRawJSON(w, status, append(data, '\n'))
+}
+
+func WriteRawJSON(w http.ResponseWriter, status int, payload []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if status == http.StatusNoContent || len(payload) == 0 {
+		return
+	}
+	_, _ = w.Write(payload)
 }
 
 func WriteError(w http.ResponseWriter, status int, code, message string) {

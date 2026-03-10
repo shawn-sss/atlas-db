@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"atlas/internal/contentpath"
 	"atlas/internal/documents"
 	"atlas/internal/httpx"
 	"atlas/internal/random"
@@ -69,12 +70,11 @@ func storeUploadedImage(src io.Reader, sniff []byte) (string, string, error) {
 	if !ok {
 		return "", "", errUnsupportedImageType
 	}
-	uploadsDir := filepath.Clean("./data/uploads")
-	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.UploadsRoot); err != nil {
 		return "", "", err
 	}
 	fname := random.GenerateToken(12)
-	outPath := filepath.Join(uploadsDir, fname+ext)
+	outPath := filepath.Join(contentpath.UploadsRoot, fname+ext)
 	out, err := os.Create(outPath)
 	if err != nil {
 		return "", "", err
@@ -110,12 +110,11 @@ func storeUploadedIcon(src io.Reader, sniff []byte) (string, string, error) {
 	dst := image.NewRGBA(image.Rect(0, 0, iconSize, iconSize))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), cropped, cropped.Bounds(), draw.Over, nil)
 
-	uploadsDir := filepath.Clean("./data/uploads")
-	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.UploadsRoot); err != nil {
 		return "", "", err
 	}
 	fname := random.GenerateToken(12)
-	outPath := filepath.Join(uploadsDir, fname+".png")
+	outPath := filepath.Join(contentpath.UploadsRoot, fname+".png")
 	out, err := os.Create(outPath)
 	if err != nil {
 		return "", "", err
@@ -142,7 +141,9 @@ func cropToSquare(img image.Image) image.Image {
 	y0 := b.Min.Y + (height-size)/2
 	rect := image.Rect(x0, y0, x0+size, y0+size)
 
-	if sub, ok := img.(interface{ SubImage(r image.Rectangle) image.Image }); ok {
+	if sub, ok := img.(interface {
+		SubImage(r image.Rectangle) image.Image
+	}); ok {
 		return sub.SubImage(rect)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))

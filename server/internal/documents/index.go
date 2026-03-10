@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"atlas/internal/contentpath"
+	"atlas/internal/dbutil"
 	"atlas/internal/random"
 )
 
@@ -31,7 +32,7 @@ type scannedDoc struct {
 const contentIndexMetaKey = "content_index_last_sync"
 
 func SyncContentIndex(db *sql.DB) error {
-	
+
 	roots := []struct {
 		path   string
 		status string
@@ -122,7 +123,7 @@ func SyncContentIndex(db *sql.DB) error {
 					}
 				}
 			}
-			
+
 			status := root.status
 			if meta.Status != "" {
 				status = meta.Status
@@ -211,8 +212,6 @@ func SyncContentIndex(db *sql.DB) error {
 		db.Exec(`INSERT INTO documents_fts(rowid,slug,title,body) VALUES((SELECT id FROM documents WHERE doc_id = ?),?,?,?)`, doc.docID, doc.slug, doc.title, doc.raw)
 	}
 
-	
-
 	if err := AlignStartPageFlag(db); err != nil {
 		log.Printf("align start page flag: %v", err)
 	}
@@ -220,13 +219,9 @@ func SyncContentIndex(db *sql.DB) error {
 	return nil
 }
 
-
-
 func ensureContentIndexFresh(db *sql.DB) {
-	var dbCount int
-	_ = db.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&dbCount)
+	dbCount, _ := dbutil.ScalarOrZero[int](db, `SELECT COUNT(1) FROM documents`)
 
-	
 	fileCount := 0
 	roots := []string{
 		contentpath.PublishedRoot,
@@ -249,14 +244,11 @@ func ensureContentIndexFresh(db *sql.DB) {
 
 	log.Printf("[ensureContentIndexFresh] dbCount=%d fileCount=%d", dbCount, fileCount)
 
-	
-	var seeded sql.NullString
-	_ = db.QueryRow(`SELECT value FROM meta WHERE key = ?`, "seed_default_content_v1").Scan(&seeded)
+	seeded, _ := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = ?`, "seed_default_content_v1")
 	hasSeeded := seeded.Valid && strings.TrimSpace(seeded.String) != ""
 
 	log.Printf("[ensureContentIndexFresh] hasSeeded=%v", hasSeeded)
 
-	
 	if fileCount != dbCount || !hasSeeded {
 		log.Printf("[ensureContentIndexFresh] triggering sync")
 		if err := SyncContentIndex(db); err != nil {

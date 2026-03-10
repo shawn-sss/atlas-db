@@ -6,27 +6,27 @@ import (
 	"net/http"
 
 	"atlas/internal/auth"
+	"atlas/internal/dbutil"
+	"atlas/internal/httpx"
 )
 
 func GetUserPrefsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := auth.UserFromContext(r)
 		if u == nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			httpx.WriteErrorMessage(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		var raw sql.NullString
-		row := db.QueryRow(`SELECT value FROM user_preferences WHERE user_id = ? AND key = 'prefs'`, u.ID)
-		if err := row.Scan(&raw); err != nil && err != sql.ErrNoRows {
-			http.Error(w, "query failed", http.StatusInternalServerError)
+		raw, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM user_preferences WHERE user_id = ? AND key = 'prefs'`, u.ID)
+		if err != nil {
+			httpx.WriteErrorMessage(w, http.StatusInternalServerError, "query failed")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		if !raw.Valid || raw.String == "" {
-			w.Write([]byte(`{}`))
+			httpx.WriteRawJSON(w, http.StatusOK, []byte("{}"))
 			return
 		}
-		w.Write([]byte(raw.String))
+		httpx.WriteRawJSON(w, http.StatusOK, []byte(raw.String))
 	}
 }
 
@@ -34,23 +34,23 @@ func PutUserPrefsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := auth.UserFromContext(r)
 		if u == nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			httpx.WriteErrorMessage(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+		if err := httpx.ReadJSON(r, &payload); err != nil {
+			httpx.WriteErrorMessage(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		b, err := json.Marshal(payload)
 		if err != nil {
-			http.Error(w, "encode error", http.StatusInternalServerError)
+			httpx.WriteErrorMessage(w, http.StatusInternalServerError, "encode error")
 			return
 		}
 		if _, err := db.Exec(`INSERT OR REPLACE INTO user_preferences(user_id,key,value,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)`, u.ID, "prefs", string(b)); err != nil {
-			http.Error(w, "save failed", http.StatusInternalServerError)
+			httpx.WriteErrorMessage(w, http.StatusInternalServerError, "save failed")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	}
 }

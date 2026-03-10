@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"log"
 	"strings"
+
+	"atlas/internal/dbutil"
 )
 
 func AlignStartPageFlag(db *sql.DB) error {
-	var slug sql.NullString
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'start_page'`).Scan(&slug); err != nil && err != sql.ErrNoRows {
+	slug, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'start_page'`)
+	if err != nil {
 		return err
 	}
 	target := strings.TrimSpace(slug.String)
@@ -45,8 +47,8 @@ func SetStartPageSlug(db *sql.DB, slug string) error {
 }
 
 func EnsureStartPageMeta(db *sql.DB, slug string, isFirstPage bool) {
-	var existing sql.NullString
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'start_page'`).Scan(&existing); err == nil && existing.String != "" {
+	existing, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'start_page'`)
+	if err == nil && existing.String != "" {
 		if err := AlignStartPageFlag(db); err != nil {
 			log.Printf("start page align: %v", err)
 		}

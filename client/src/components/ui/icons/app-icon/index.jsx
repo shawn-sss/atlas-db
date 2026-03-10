@@ -1,8 +1,14 @@
 import React from "react";
 
 const DEFAULT_ICON_SRC = "/brand/icon_512x512.png";
+export const APP_ICON_SIZES = Object.freeze({
+  compact: 32,
+  brand: 72,
+  preview: 112,
+  default: 56,
+});
 
-export default function AppIcon({ size = 56, src, alt }) {
+export default function AppIcon({ size = APP_ICON_SIZES.default, src, alt }) {
   const iconSrc = src || DEFAULT_ICON_SRC;
   const isCustom = Boolean(src);
 

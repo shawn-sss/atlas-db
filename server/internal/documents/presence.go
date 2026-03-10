@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"atlas/internal/auth"
+	"atlas/internal/dbutil"
 	"atlas/internal/httpx"
 
 	"github.com/go-chi/chi/v5"
@@ -100,11 +101,8 @@ func documentPresenceUpdateHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func presenceAllowed(db *sql.DB, slug, username string) bool {
-	var status sql.NullString
-	if err := db.QueryRow(`SELECT status FROM documents WHERE slug = ?`, slug).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
-			return false
-		}
+	status, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT status FROM documents WHERE slug = ?`, slug)
+	if err != nil {
 		return false
 	}
 	return status.Valid

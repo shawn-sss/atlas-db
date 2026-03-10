@@ -2,60 +2,47 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
-	"time"
 
+	"atlas/internal/dbutil"
 	"atlas/internal/httpx"
 	"atlas/internal/random"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 
 	r.Get("/bootstrap", func(w http.ResponseWriter, r *http.Request) {
-		var docsCount int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&docsCount); err != nil {
-			httpErr(w, http.StatusInternalServerError, "documents count failed")
-			return
-		}
-		var usersCount int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM users`).Scan(&usersCount); err != nil {
+		usersCount, err := dbutil.Scalar[int](db, `SELECT COUNT(1) FROM users`)
+		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "users count failed")
 			return
 		}
-		var bootID string
-		if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'boot_id'`).Scan(&bootID); err != nil {
+		bootID, err := dbutil.ScalarOrZero[string](db, `SELECT value FROM meta WHERE key = 'boot_id'`)
+		if err != nil {
 			bootID = ""
 		}
-		var startPageSlug sql.NullString
-		if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'start_page'`).Scan(&startPageSlug); err != nil {
-			startPageSlug.String = ""
-			startPageSlug.Valid = false
+		startPageSlug, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'start_page'`)
+		if err != nil {
+			startPageSlug = sql.NullString{}
 		}
-		var timezone sql.NullString
-		if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'timezone'`).Scan(&timezone); err != nil {
-			timezone.String = ""
-			timezone.Valid = false
+		timezone, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'timezone'`)
+		if err != nil {
+			timezone = sql.NullString{}
 		}
-		var appTitle sql.NullString
-		if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'app_title'`).Scan(&appTitle); err != nil {
-			appTitle.String = ""
-			appTitle.Valid = false
+		appTitle, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'app_title'`)
+		if err != nil {
+			appTitle = sql.NullString{}
 		}
-		var appIcon sql.NullString
-		if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'app_icon'`).Scan(&appIcon); err != nil {
-			appIcon.String = ""
-			appIcon.Valid = false
+		appIcon, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'app_icon'`)
+		if err != nil {
+			appIcon = sql.NullString{}
 		}
 		fresh := usersCount == 0 && startPageSlug.String == ""
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"fresh":         fresh,
 			"bootId":        bootID,
 			"startPageSlug": startPageSlug.String,
@@ -67,7 +54,7 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 
 	r.Put("/bootstrap/timezone", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Timezone string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -84,12 +71,12 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusInternalServerError, "unable to save timezone")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 
 	r.Put("/bootstrap/app-title", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ AppTitle string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -102,12 +89,12 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusInternalServerError, "unable to save app title")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 
 	r.Post("/setup/finish", func(w http.ResponseWriter, r *http.Request) {
-		var usersCount int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM users`).Scan(&usersCount); err != nil {
+		usersCount, err := dbutil.Scalar[int](db, `SELECT COUNT(1) FROM users`)
+		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "users count failed")
 			return
 		}
@@ -130,16 +117,9 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 		}
 		var ownerID int64
 		for i, s := range seed {
-			hash, err := bcrypt.GenerateFromPassword([]byte(s.Password), bcrypt.DefaultCost)
+			res, err := createUserRecord(tx, s.Username, s.Password, s.Role)
 			if err != nil {
-				httpErr(w, http.StatusInternalServerError, "hash error")
-				return
-			}
-			res, err := tx.Exec(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)`, s.Username, hash, s.Role)
-			if err != nil {
-
-				msg := strings.ToLower(err.Error())
-				if strings.Contains(msg, "unique") || strings.Contains(msg, "constraint") {
+				if isUniqueConstraintError(err) {
 					httpx.WriteError(w, http.StatusConflict, "USERS_EXIST", "Users already exist")
 					return
 				}
@@ -151,9 +131,8 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			}
 		}
 
-		token := random.GenerateToken(32)
-		expires := time.Now().Add(7 * 24 * time.Hour)
-		if _, err := tx.Exec(`INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)`, token, ownerID, expires.Format(time.RFC3339)); err != nil {
+		token, expires, err := createSessionRecord(tx, ownerID)
+		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "session error")
 			return
 		}
@@ -163,8 +142,8 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 
-		var bootID string
-		if err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'boot_id'`).Scan(&bootID); err != nil || bootID == "" {
+		bootID, err := dbutil.ScalarOrZero[string](tx, `SELECT value FROM meta WHERE key = 'boot_id'`)
+		if err != nil || bootID == "" {
 			bootID = random.GenerateToken(12)
 			if _, err := tx.Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('boot_id',?)`, bootID); err != nil {
 				httpErr(w, http.StatusInternalServerError, "meta boot_id")
@@ -177,33 +156,23 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 
-		cookie := &http.Cookie{Name: "session_token", Value: token, Path: "/", Expires: expires, HttpOnly: true, SameSite: http.SameSiteLaxMode}
-		http.SetCookie(w, cookie)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"id": ownerID, "username": "owner", "role": "Owner"})
+		writeSessionCookie(w, token, expires)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": ownerID, "username": "owner", "role": "Owner"})
 	})
 
 	r.Post("/bootstrap/app-icon", func(w http.ResponseWriter, r *http.Request) {
+		upload, ok := parseMultipartUploadOrRespond(w, r, 10<<20, uploadErrorMessages{
+			invalidFormData: "invalid form data",
+			missingUpload:   "missing file",
+			invalidFile:     "invalid image file",
+			serverError:     "server error",
+		})
+		if !ok {
+			return
+		}
+		defer upload.File.Close()
 
-		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			httpErr(w, http.StatusBadRequest, "invalid form data")
-			return
-		}
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			httpErr(w, http.StatusBadRequest, "missing file")
-			return
-		}
-		defer file.Close()
-
-		sniff := make([]byte, 512)
-		n, err := io.ReadFull(file, sniff)
-		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			httpErr(w, http.StatusBadRequest, "invalid image file")
-			return
-		}
-		url, _, err := storeUploadedIcon(file, sniff[:n])
+		url, _, err := storeUploadedIcon(upload.File, upload.Sniff)
 		if err != nil {
 			if errors.Is(err, errUnsupportedImageType) {
 				httpErr(w, http.StatusBadRequest, "unsupported image type")
@@ -216,8 +185,7 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusInternalServerError, "unable to save icon")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"url": url})
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"url": url})
 	})
 
 	r.Delete("/bootstrap/app-icon", func(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +193,6 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusInternalServerError, "unable to clear icon")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 }

@@ -17,29 +17,30 @@ import (
 	"atlas/internal/contentpath"
 )
 
-const secretPath = "./data/secret.key"
-
 func ensureSecret() ([]byte, error) {
-	if _, err := os.Stat(secretPath); err == nil {
-		return os.ReadFile(secretPath)
+	if _, err := os.Stat(contentpath.SecretPath); err == nil {
+		return os.ReadFile(contentpath.SecretPath)
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(secretPath, b, 0600); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.DataRoot); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(contentpath.SecretPath, b, 0o600); err != nil {
 		return nil, err
 	}
 	return b, nil
 }
 
 func CreateBackup() (string, string, error) {
-	if err := os.MkdirAll("./data/backups", 0o755); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.BackupsRoot); err != nil {
 		return "", "", err
 	}
 	ts := time.Now().Format("20060102_150405")
 	name := fmt.Sprintf("backup_%s.zip", ts)
-	path := filepath.Join("./data/backups", name)
+	path := filepath.Join(contentpath.BackupsRoot, name)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -98,15 +99,15 @@ func CreateBackup() (string, string, error) {
 		f.Close()
 		return "", "", err
 	}
-	if _, err := os.Stat("./data/app.db"); err == nil {
-		if err := addFile("./data", "app.db"); err != nil {
+	if _, err := os.Stat(contentpath.DatabasePath); err == nil {
+		if err := addFile(contentpath.DataRoot, filepath.Base(contentpath.DatabasePath)); err != nil {
 			zw.Close()
 			f.Close()
 			return "", "", err
 		}
 	}
-	if _, err := os.Stat("./data/history"); err == nil {
-		if err := addFile("./data", "history"); err != nil {
+	if _, err := os.Stat(contentpath.HistoryRoot); err == nil {
+		if err := addFile(contentpath.DataRoot, filepath.Base(contentpath.HistoryRoot)); err != nil {
 			zw.Close()
 			f.Close()
 			return "", "", err
@@ -121,27 +122,19 @@ func CreateBackup() (string, string, error) {
 		return "", "", err
 	}
 
-	secret, err := ensureSecret()
+	sig, err := signFile(path)
 	if err != nil {
 		return "", "", err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", err
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(data)
-	sig := hex.EncodeToString(mac.Sum(nil))
-	_ = os.WriteFile(path+".sig", []byte(sig), 0o600)
 	return path, sig, nil
 }
 
 func ListBackups() ([]string, error) {
 	var out []string
-	if err := os.MkdirAll("./data/backups", 0o755); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.BackupsRoot); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir("./data/backups")
+	entries, err := os.ReadDir(contentpath.BackupsRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -179,17 +172,41 @@ func VerifyBackup(path string) (bool, error) {
 }
 
 func SaveUploadedBackup(src io.Reader, filename string) (string, error) {
-	if err := os.MkdirAll("./data/backups", 0o755); err != nil {
+	if err := contentpath.EnsureDirs(contentpath.BackupsRoot); err != nil {
 		return "", err
 	}
-	dest := filepath.Join("./data/backups", filename)
+	dest := filepath.Join(contentpath.BackupsRoot, filename)
 	out, err := os.Create(dest)
 	if err != nil {
 		return "", err
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	if _, err := signFile(dest); err != nil {
 		return "", err
 	}
 	return dest, nil
+}
+
+func signFile(path string) (string, error) {
+	secret, err := ensureSecret()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(data)
+	sig := hex.EncodeToString(mac.Sum(nil))
+	if err := os.WriteFile(path+".sig", []byte(sig), 0o600); err != nil {
+		return "", err
+	}
+	return sig, nil
 }

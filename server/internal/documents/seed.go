@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"atlas/internal/contentpath"
+	"atlas/internal/dbutil"
 	"atlas/internal/random"
 )
 
@@ -22,13 +23,13 @@ type seedDoc struct {
 const defaultSeedMetaKey = "seed_default_content_v1"
 
 func seedDefaultStructureIfNeeded(db *sql.DB) []string {
-	var setupComplete sql.NullString
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'setup_complete'`).Scan(&setupComplete); err != nil || strings.TrimSpace(setupComplete.String) != "1" {
+	setupComplete, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'setup_complete'`)
+	if err != nil || strings.TrimSpace(setupComplete.String) != "1" {
 		return nil
 	}
 
-	var seeded sql.NullString
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey).Scan(&seeded); err == nil {
+	seeded, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey)
+	if err == nil {
 		value := strings.TrimSpace(seeded.String)
 		if value != "" && value != "nuked" {
 			return nil

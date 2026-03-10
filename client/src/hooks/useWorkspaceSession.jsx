@@ -35,6 +35,7 @@ import { cleanSlug, slugify, decodeSlug } from "../utils/slug";
 import { formatTimestamp, normalizeStatus } from "../utils/formatters";
 import { escapeHtml, extractSection } from "../utils/markdown-helpers";
 import { createDefaultCollapsedFolders } from "../utils/app-state";
+import { hasAdminAccess } from "../utils/userRoles";
 
 export default function useWorkspaceSession() {
   const [user, setUser] = useState(null);
@@ -82,10 +83,8 @@ export default function useWorkspaceSession() {
   const parentPickerAction = useRef(null);
   const [pendingNewDocParent, setPendingNewDocParent] = useState("");
   const [pendingFolderParent, setPendingFolderParent] = useState("");
-  const role = (user?.role || "").toLowerCase();
-  const isOwner = role === "owner";
-  const canAdmin = role === "admin" || role === "owner";
-  const canRestoreHistory = role === "admin" || role === "owner";
+  const canAdmin = hasAdminAccess(user);
+  const canRestoreHistory = canAdmin;
   const [historyEntries, setHistoryEntries] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
@@ -2135,8 +2134,6 @@ export default function useWorkspaceSession() {
       appTitleText={appTitleText}
       bootstrapInfo={bootstrapInfo}
       activeUsers={activeUsers}
-      isOwner={isOwner}
-      onNukeWorkspace={handleNukeWorkspace}
       onOpenSettings={() => setShowSettings(true)}
       onLogout={handleLogout}
       sidebarProps={sidebarProps}
