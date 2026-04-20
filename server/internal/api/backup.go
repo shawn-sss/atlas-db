@@ -17,8 +17,8 @@ import (
 
 func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 
-	r.With(auth.AuthMiddleware(db)).Post("/backup", func(w http.ResponseWriter, r *http.Request) {
-		path, sig, err := backup.CreateBackup()
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Post("/backup", func(w http.ResponseWriter, r *http.Request) {
+		path, sig, err := backup.CreateBackup(db)
 		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "BACKUP_CREATE_FAILED", err.Error())
 			return
@@ -114,7 +114,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
 
-	r.With(auth.AuthMiddleware(db)).Get("/backups", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Get("/backups", func(w http.ResponseWriter, r *http.Request) {
 		list, err := backup.ListBackups()
 		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "list failed")
@@ -123,7 +123,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 		httpx.WriteJSON(w, http.StatusOK, list)
 	})
 
-	r.With(auth.AuthMiddleware(db)).Get("/backup/file", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Get("/backup/file", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("file")
 		if q == "" {
 			httpErr(w, http.StatusBadRequest, "missing file")
@@ -170,9 +170,21 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			httpErr(w, http.StatusInternalServerError, "save failed")
 			return
 		}
-		ok, verr := backup.VerifyBackup(dst)
-		if verr != nil || !ok {
-			httpErr(w, http.StatusBadRequest, "invalid backup signature")
+		stageDir, err := os.MkdirTemp(contentpath.BackupsRoot, "validate-*")
+		if err != nil {
+			_ = os.Remove(dst)
+			httpErr(w, http.StatusInternalServerError, "save failed")
+			return
+		}
+		defer os.RemoveAll(stageDir)
+		if err := backup.StageBackupZip(dst, stageDir); err != nil {
+			_ = os.Remove(dst)
+			httpErr(w, http.StatusBadRequest, "invalid backup file")
+			return
+		}
+		if _, err := backup.SignBackup(dst); err != nil {
+			_ = os.Remove(dst)
+			httpErr(w, http.StatusInternalServerError, "save failed")
 			return
 		}
 		if u := auth.UserFromContext(r); u != nil {
@@ -211,7 +223,7 @@ func registerBackupRoutes(r chi.Router, db *sql.DB, restoreCh chan<- string) {
 			httpx.WriteError(w, http.StatusInternalServerError, "RESTORE_STAGE_DIR_FAILED", err.Error())
 			return
 		}
-		if err := stageBackupZip(path, stagingDir); err != nil {
+		if err := backup.StageBackupZip(path, stagingDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
 			httpx.WriteError(w, http.StatusInternalServerError, "RESTORE_STAGE_FAILED", err.Error())
 			return

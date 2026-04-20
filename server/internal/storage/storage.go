@@ -115,6 +115,9 @@ func InitDB(db *sql.DB) error {
 	if err := documents.AlignStartPageFlag(db); err != nil {
 		log.Printf("align start page flag: %v", err)
 	}
+	if err := documents.EnsureDocumentCreationHistory(db); err != nil {
+		return err
+	}
 	return nil
 }
 

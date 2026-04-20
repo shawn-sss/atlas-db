@@ -7,7 +7,6 @@ import ErrorToast from "../ui/modals/error-toast";
 import ReaderView from "../documents/document-reader";
 import DocumentAboutModal from "./DocumentAboutModal";
 import HistoryDiffModal from "./HistoryDiffModal";
-
 export default function WorkspaceModals({
   newModal = {},
   folderPrompt = {},
@@ -17,14 +16,13 @@ export default function WorkspaceModals({
   editorOverlay = {},
   settings = {},
   error = {},
-  historyDiff = {},
+  historyDiff = {}
 }) {
   const {
     show: overlayShow,
     component: Editor,
-    props: overlayProps = {},
+    props: overlayProps = {}
   } = editorOverlay;
-
   const {
     show: showAbout,
     selectedDoc,
@@ -39,32 +37,28 @@ export default function WorkspaceModals({
     historyDiffEntryId,
     onHistoryDiff,
     onHistoryRollback,
-    canRestoreHistory,
+    canRestoreHistory
   } = aboutModal;
-
   const {
     show: showReader,
     selectedDoc: readerSelected,
     html: readerHtml,
     info: readerInfo,
-    onClose: closeReader,
+    onClose: closeReader
   } = readerModal;
-
   const {
     show: showNewModal,
     onClose: closeNewModal,
     onDocument,
-    onFolderSelect,
+    onFolderSelect
   } = newModal;
-
   const {
     show: showParentPicker,
     tree: parentPickerTree = [],
     state: parentPickerState = {},
     onClose: closeParentPicker,
-    onConfirm: confirmParentPicker,
+    onConfirm: confirmParentPicker
   } = parentPicker;
-
   const {
     show: showFolderPrompt,
     folderName,
@@ -73,9 +67,8 @@ export default function WorkspaceModals({
     onSave: saveFolder,
     busy: folderBusy,
     error: folderError,
-    parentSlug,
+    parentSlug
   } = folderPrompt;
-
   const {
     show: showSettings,
     user,
@@ -87,107 +80,32 @@ export default function WorkspaceModals({
     onSetStartPage,
     onNuke,
     onAppIconChange,
-    onAppTitleChange,
+    onAppTitleChange
   } = settings;
-
-  const { message, onClose: closeError } = error;
-
+  const {
+    message,
+    onClose: closeError
+  } = error;
   const {
     show: showHistoryDiff,
     data,
     loading,
     error: historyErrorMessage,
-    onClose: closeHistoryDiff,
+    onClose: closeHistoryDiff
   } = historyDiff;
-
-  return (
-    <>
-      {showNewModal && (
-        <NewActionModal
-          onClose={closeNewModal}
-          onDocument={onDocument}
-          onFolderSelect={onFolderSelect}
-        />
-      )}
-      {showParentPicker && (
-        <FolderPickerModal
-          tree={parentPickerTree}
-          title={parentPickerState.title}
-          subtitle={parentPickerState.subtitle}
-          confirmLabel={parentPickerState.confirmLabel}
-          initialSlug={parentPickerState.initialSelection}
-          blockedSlug={parentPickerState.blockedSlug}
-          onClose={closeParentPicker}
-          onConfirm={confirmParentPicker}
-        />
-      )}
-      {showFolderPrompt && (
-        <FolderPromptModal
-          folderName={folderName}
-          onFolderNameChange={onFolderNameChange}
-          onClose={closeFolderPrompt}
-          onSave={saveFolder}
-          busy={folderBusy}
-          error={folderError}
-          parentSlug={parentSlug}
-        />
-      )}
-      <DocumentAboutModal
-        show={showAbout}
-        selectedDoc={selectedDoc}
-        info={info}
-        onClose={closeAbout}
-        historyEntries={historyEntries}
-        historyLoading={historyLoading}
-        historyError={historyError}
-        historyRestoreError={historyRestoreError}
-        historyRestoreId={historyRestoreId}
-        historyDiffLoading={historyDiffLoading}
-        historyDiffEntryId={historyDiffEntryId}
-        onHistoryDiff={onHistoryDiff}
-        onHistoryRollback={onHistoryRollback}
-        canRestoreHistory={canRestoreHistory}
-      />
-      {showReader && readerSelected && (
-        <ReaderView
-          show={showReader}
-          onClose={closeReader}
-          html={readerHtml}
-          selectedDoc={readerSelected}
-          info={readerInfo}
-        />
-      )}
-      {overlayShow && Editor && (
-        <div className="editor-fullscreen-overlay">
-          <React.Suspense
-            fallback={<div className="muted">Loading editor...</div>}
-          >
+  return <>
+      {showNewModal && <NewActionModal onClose={closeNewModal} onDocument={onDocument} onFolderSelect={onFolderSelect} />}
+      {showParentPicker && <FolderPickerModal tree={parentPickerTree} title={parentPickerState.title} subtitle={parentPickerState.subtitle} confirmLabel={parentPickerState.confirmLabel} initialSlug={parentPickerState.initialSelection} blockedSlug={parentPickerState.blockedSlug} onClose={closeParentPicker} onConfirm={confirmParentPicker} />}
+      {showFolderPrompt && <FolderPromptModal folderName={folderName} onFolderNameChange={onFolderNameChange} onClose={closeFolderPrompt} onSave={saveFolder} busy={folderBusy} error={folderError} parentSlug={parentSlug} />}
+      <DocumentAboutModal show={showAbout} selectedDoc={selectedDoc} info={info} onClose={closeAbout} historyEntries={historyEntries} historyLoading={historyLoading} historyError={historyError} historyRestoreError={historyRestoreError} historyRestoreId={historyRestoreId} historyDiffLoading={historyDiffLoading} historyDiffEntryId={historyDiffEntryId} onHistoryDiff={onHistoryDiff} onHistoryRollback={onHistoryRollback} canRestoreHistory={canRestoreHistory} />
+      {showReader && readerSelected && <ReaderView show={showReader} onClose={closeReader} html={readerHtml} selectedDoc={readerSelected} info={readerInfo} />}
+      {overlayShow && Editor && <div className="editor-fullscreen-overlay">
+          <React.Suspense fallback={<div className="editor-overlay-placeholder" aria-hidden="true" />}>
             <Editor {...overlayProps} />
           </React.Suspense>
-        </div>
-      )}
-      {showSettings && (
-        <SettingsModal
-          user={user}
-          startPageSlug={startPageSlug}
-          bootstrap={bootstrap}
-          initialCategory={initialCategory}
-          onCategoryChange={onCategoryChange}
-          onClose={closeSettings}
-          onSetStartPage={onSetStartPage}
-          onNuke={onNuke}
-          onAppIconChange={onAppIconChange}
-          onAppTitleChange={onAppTitleChange}
-        />
-      )}
+        </div>}
+      {showSettings && <SettingsModal user={user} startPageSlug={startPageSlug} bootstrap={bootstrap} initialCategory={initialCategory} onCategoryChange={onCategoryChange} onClose={closeSettings} onSetStartPage={onSetStartPage} onNuke={onNuke} onAppIconChange={onAppIconChange} onAppTitleChange={onAppTitleChange} />}
       {message && <ErrorToast onClose={closeError}>{message}</ErrorToast>}
-      <HistoryDiffModal
-        show={showHistoryDiff}
-        data={data}
-        loading={loading}
-        error={historyErrorMessage}
-        onClose={closeHistoryDiff}
-      />
-    </>
-  );
+      <HistoryDiffModal show={showHistoryDiff} data={data} loading={loading} error={historyErrorMessage} onClose={closeHistoryDiff} />
+    </>;
 }

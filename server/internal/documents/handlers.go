@@ -21,6 +21,7 @@ import (
 
 	"atlas/internal/auth"
 	"atlas/internal/contentpath"
+	"atlas/internal/dbutil"
 	"atlas/internal/httpx"
 	"atlas/internal/random"
 
@@ -69,7 +70,6 @@ func docErr(w http.ResponseWriter, status int, message string) {
 
 func listDocumentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ensureContentIndexFresh(db)
 		statuses := parseStatusParam(r.URL.Query().Get("status"))
 		if len(statuses) == 0 {
 			statuses = []string{"published"}
@@ -114,7 +114,6 @@ func listDocumentsHandler(db *sql.DB) http.HandlerFunc {
 
 func navTreeHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ensureContentIndexFresh(db)
 		query := r.URL.Query()
 		statuses := parseStatusParam(query.Get("status"))
 		if len(statuses) == 0 {
@@ -166,7 +165,6 @@ func navTreeHandler(db *sql.DB) http.HandlerFunc {
 
 func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ensureContentIndexFresh(db)
 		queryText := strings.TrimSpace(r.URL.Query().Get("q"))
 		if queryText == "" {
 			docErr(w, http.StatusBadRequest, "missing query")
@@ -253,7 +251,6 @@ func searchDocumentsHandler(db *sql.DB) http.HandlerFunc {
 
 func documentDetailHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ensureContentIndexFresh(db)
 		slug := cleanSlugParam(chi.URLParam(r, "*"))
 		if slug == "" {
 			docErr(w, http.StatusBadRequest, "missing slug")
@@ -390,6 +387,7 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 
 		var overwriteTargetDocID sql.NullString
 		var overwriteTargetStatus sql.NullString
+		overwriteTargetExists := false
 		if renToRaw != "" {
 			newSlug := slugify(renToRaw)
 			if newSlug == "" {
@@ -403,9 +401,11 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 					}
 					overwriteTargetDocID = sql.NullString{}
 					overwriteTargetStatus = sql.NullString{}
+				} else {
+					overwriteTargetExists = true
 				}
-				if overwriteTargetDocID.Valid {
-					if overwriteTargetDocID.String == "" {
+				if overwriteTargetExists {
+					if strings.TrimSpace(overwriteTargetDocID.String) == "" {
 						if !allowOverwrite {
 							docErr(w, http.StatusConflict, "slug exists")
 							return
@@ -499,6 +499,7 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 
 		var oldSlugVal string
 		wasStartPage := false
+		renamePreservedRow := false
 		if renToRaw != "" {
 			newSlug := slugify(renToRaw)
 			if newSlug == "" {
@@ -510,8 +511,8 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 					return
 				}
 
-				if overwriteTargetDocID.Valid {
-					if overwriteTargetDocID.String == "" {
+				if overwriteTargetExists {
+					if strings.TrimSpace(overwriteTargetDocID.String) == "" {
 						if !allowOverwrite {
 							docErr(w, http.StatusConflict, "slug exists")
 							return
@@ -561,17 +562,7 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 				oldSlugVal = slug
 				slug = newSlug
 				path = newPath
-
-				db.Exec(`UPDATE history SET page_slug = ? WHERE page_slug = ?`, slug, oldSlugVal)
 			}
-		}
-
-		if oldSlugVal != "" && oldSlugVal != slug {
-			if _, err := db.Exec(`DELETE FROM documents WHERE slug = ?`, oldSlugVal); err != nil {
-				docErr(w, http.StatusInternalServerError, "db update failed")
-				return
-			}
-			db.Exec(`DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE slug = ?)`, oldSlugVal)
 		}
 
 		title := extractTitle(content)
@@ -587,10 +578,17 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		now := time.Now().UTC().Format(time.RFC3339)
 		createdAt := now
 
+		tx, err := db.Begin()
+		if err != nil {
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
+		}
+		defer tx.Rollback()
+
 		homeVal := 1
 		if meta.ID != "" {
 			var existingHome sql.NullInt64
-			if err := db.QueryRow(`SELECT is_home FROM documents WHERE doc_id = ?`, meta.ID).Scan(&existingHome); err == nil {
+			if err := tx.QueryRow(`SELECT is_home FROM documents WHERE doc_id = ?`, meta.ID).Scan(&existingHome); err == nil {
 				if existingHome.Valid {
 					homeVal = int(existingHome.Int64)
 				}
@@ -619,18 +617,31 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 				for i, target := range targetSlugs {
 					args[i] = target
 				}
-				rows, err := db.Query(fmt.Sprintf(`SELECT slug,doc_id FROM documents WHERE slug IN (%s)`, placeholders(len(targetSlugs))), args...)
-				if err == nil {
-					for rows.Next() {
-						var existingSlug sql.NullString
-						var existingID sql.NullString
-						if scanErr := rows.Scan(&existingSlug, &existingID); scanErr == nil && existingSlug.Valid {
-							slugMap[existingSlug.String] = existingID.String
-						}
+				rows, err := tx.Query(fmt.Sprintf(`SELECT slug,doc_id FROM documents WHERE slug IN (%s)`, placeholders(len(targetSlugs))), args...)
+				if err != nil {
+					docErr(w, http.StatusInternalServerError, "query error")
+					return
+				}
+				for rows.Next() {
+					var existingSlug sql.NullString
+					var existingID sql.NullString
+					if scanErr := rows.Scan(&existingSlug, &existingID); scanErr != nil {
+						rows.Close()
+						docErr(w, http.StatusInternalServerError, "query error")
+						return
 					}
+					if existingSlug.Valid {
+						slugMap[existingSlug.String] = existingID.String
+					}
+				}
+				if err := rows.Err(); err != nil {
 					rows.Close()
-				} else {
-					log.Printf("load slug map: %v", err)
+					docErr(w, http.StatusInternalServerError, "query error")
+					return
+				}
+				if err := rows.Close(); err != nil {
+					docErr(w, http.StatusInternalServerError, "query error")
+					return
 				}
 			}
 		}
@@ -639,40 +650,89 @@ func documentSaveHandler(db *sql.DB) http.HandlerFunc {
 		linkJSON := idsToJSON(linkIDs)
 
 		var docCount int
-		_ = db.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&docCount)
-		isFirst := docCount == 0
-
-		var isStart int
-		if err := db.QueryRow(`SELECT is_start_page FROM documents WHERE slug = ?`, slug).Scan(&isStart); err != nil && err != sql.ErrNoRows {
+		if err := tx.QueryRow(`SELECT COUNT(1) FROM documents`).Scan(&docCount); err != nil {
 			docErr(w, http.StatusInternalServerError, "query error")
 			return
 		}
+		isFirst := docCount == 0
 
-		_, err = db.Exec(`INSERT INTO documents(doc_id,slug,title,path,parent_slug,status,owner,created_at,updated_at,is_home,links)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(slug) DO UPDATE SET doc_id=excluded.doc_id, title=excluded.title, path=excluded.path, parent_slug=excluded.parent_slug, status=excluded.status, owner=excluded.owner, updated_at=excluded.updated_at, links=excluded.links;`,
-			meta.ID, slug, title, path, parentVal, status, meta.Owner, createdAt, now, homeVal, linkJSON)
-		if err != nil {
-			docErr(w, http.StatusInternalServerError, "db update failed")
+		if oldSlugVal != "" && oldSlugVal != slug {
+			if overwriteTargetExists {
+				if _, err := tx.Exec(`DELETE FROM documents WHERE slug = ?`, oldSlugVal); err != nil {
+					docErr(w, http.StatusInternalServerError, "db update failed")
+					return
+				}
+			} else {
+				result, err := tx.Exec(`UPDATE documents SET doc_id = ?, slug = ?, title = ?, path = ?, parent_slug = ?, status = ?, owner = ?, updated_at = ?, links = ? WHERE slug = ?`,
+					meta.ID, slug, title, path, parentVal, status, meta.Owner, now, linkJSON, oldSlugVal)
+				if err != nil {
+					docErr(w, http.StatusInternalServerError, "db update failed")
+					return
+				}
+				if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
+					renamePreservedRow = true
+				}
+			}
+			if err := deleteDocumentsFTSBySlug(tx, oldSlugVal); err != nil {
+				docErr(w, http.StatusInternalServerError, "search index update failed")
+				return
+			}
+			if _, err := tx.Exec(`UPDATE history SET page_slug = ? WHERE page_slug = ?`, slug, oldSlugVal); err != nil {
+				docErr(w, http.StatusInternalServerError, "history update failed")
+				return
+			}
+		}
+
+		if !renamePreservedRow {
+			_, err = tx.Exec(`INSERT INTO documents(doc_id,slug,title,path,parent_slug,status,owner,created_at,updated_at,is_home,links)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?)
+				ON CONFLICT(slug) DO UPDATE SET doc_id=excluded.doc_id, title=excluded.title, path=excluded.path, parent_slug=excluded.parent_slug, status=excluded.status, owner=excluded.owner, updated_at=excluded.updated_at, links=excluded.links;`,
+				meta.ID, slug, title, path, parentVal, status, meta.Owner, createdAt, now, homeVal, linkJSON)
+			if err != nil {
+				docErr(w, http.StatusInternalServerError, "db update failed")
+				return
+			}
+		}
+
+		if err := replaceDocumentsFTSByDocID(tx, meta.ID, slug, title, string(body)); err != nil {
+			docErr(w, http.StatusInternalServerError, "search index update failed")
+			return
+		}
+		if err := pruneDocumentsFTS(tx); err != nil {
+			docErr(w, http.StatusInternalServerError, "search index update failed")
 			return
 		}
 
-		db.Exec(`DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE doc_id = ?)`, meta.ID)
-		db.Exec(`INSERT INTO documents_fts(rowid,slug,title,body) VALUES((SELECT id FROM documents WHERE doc_id = ?),?,?,?)`, meta.ID, slug, title, string(body))
-
 		if wasStartPage {
-			_ = SetStartPageSlug(db, slug)
+			if err := SetStartPageSlug(tx, slug); err != nil {
+				docErr(w, http.StatusInternalServerError, "start page update failed")
+				return
+			}
+		}
+		if isFirst && !wasStartPage {
+			if err := SetStartPageSlug(tx, slug); err != nil {
+				docErr(w, http.StatusInternalServerError, "start page update failed")
+				return
+			}
 		}
 
 		if u := auth.UserFromContext(r); u != nil {
-			db.Exec(`INSERT INTO audit(user_id,action,target) VALUES(?,?,?)`, u.ID, "edit_document", slug)
+			if _, err := tx.Exec(`INSERT INTO audit(user_id,action,target) VALUES(?,?,?)`, u.ID, "edit_document", slug); err != nil {
+				docErr(w, http.StatusInternalServerError, "audit update failed")
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
+		}
+
+		if u := auth.UserFromContext(r); u != nil {
 			clearUserDraftBySlug(db, u, slug)
 			if oldSlugVal != "" && oldSlugVal != slug {
 				clearUserDraftBySlug(db, u, oldSlugVal)
 			}
-		}
-		if isFirst {
-			EnsureStartPageMeta(db, slug, true)
 		}
 		if slug == "start-page" {
 			seededSlugs := seedDefaultStructureIfNeeded(db)
@@ -716,18 +776,118 @@ func documentDeleteHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusBadRequest, "invalid slug")
 			return
 		}
+		like := slug + "/%"
 
-		if _, err := os.Stat(path); err == nil {
-			if err := os.Remove(path); err != nil {
+		type deleteRow struct {
+			DocID string
+			Slug  string
+			Path  string
+		}
+		rows, err := db.Query(`SELECT doc_id,slug,path FROM documents WHERE slug = ? OR slug LIKE ?`, slug, like)
+		if err != nil {
+			docErr(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		defer rows.Close()
+
+		var docs []deleteRow
+		for rows.Next() {
+			var row deleteRow
+			if err := rows.Scan(&row.DocID, &row.Slug, &row.Path); err != nil {
+				docErr(w, http.StatusInternalServerError, "query failed")
+				return
+			}
+			docs = append(docs, row)
+		}
+		if err := rows.Err(); err != nil {
+			docErr(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if len(docs) == 0 {
+			if _, statErr := os.Stat(path); statErr != nil {
+				docErr(w, http.StatusNotFound, "not found")
+				return
+			}
+			docs = append(docs, deleteRow{Slug: slug, Path: path})
+		}
+
+		type removedFile struct {
+			path string
+			data []byte
+		}
+		removed := make([]removedFile, 0, len(docs))
+		seenPaths := make(map[string]struct{}, len(docs))
+		for _, doc := range docs {
+			if strings.TrimSpace(doc.Path) == "" {
+				continue
+			}
+			if _, seen := seenPaths[doc.Path]; seen {
+				continue
+			}
+			seenPaths[doc.Path] = struct{}{}
+			data, readErr := os.ReadFile(doc.Path)
+			if readErr != nil {
+				if os.IsNotExist(readErr) {
+					continue
+				}
 				docErr(w, http.StatusInternalServerError, "delete failed")
 				return
 			}
+			if err := os.Remove(doc.Path); err != nil {
+				docErr(w, http.StatusInternalServerError, "delete failed")
+				return
+			}
+			removed = append(removed, removedFile{path: doc.Path, data: data})
+		}
+		rollbackFiles := func() {
+			for i := len(removed) - 1; i >= 0; i-- {
+				item := removed[i]
+				if err := os.MkdirAll(filepath.Dir(item.path), 0o755); err != nil {
+					continue
+				}
+				_ = os.WriteFile(item.path, item.data, 0o644)
+			}
 		}
 
-		db.Exec(`DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE slug = ?)`, slug)
-		db.Exec(`DELETE FROM documents WHERE slug = ?`, slug)
+		tx, err := db.Begin()
+		if err != nil {
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE slug = ? OR slug LIKE ?)`, slug, like); err != nil {
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "search index update failed")
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM documents WHERE slug = ? OR slug LIKE ?`, slug, like); err != nil {
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "db update failed")
+			return
+		}
+		currentStartPage, startPageErr := dbutil.ScalarOrZero[string](tx, `SELECT value FROM meta WHERE key = 'start_page'`)
+		if startPageErr == nil && (currentStartPage == slug || strings.HasPrefix(currentStartPage, slug+"/")) {
+			if err := SetStartPageSlug(tx, ""); err != nil {
+				rollbackFiles()
+				docErr(w, http.StatusInternalServerError, "start page update failed")
+				return
+			}
+		}
 		if u := auth.UserFromContext(r); u != nil {
-			db.Exec(`INSERT INTO audit(user_id,action,target) VALUES(?,?,?)`, u.ID, "delete_document", slug)
+			if _, err := tx.Exec(`INSERT INTO audit(user_id,action,target) VALUES(?,?,?)`, u.ID, "delete_document", slug); err != nil {
+				rollbackFiles()
+				docErr(w, http.StatusInternalServerError, "audit update failed")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
+		}
+		for _, item := range removed {
+			cleanupEmptyParentDirs(item.path)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -1147,7 +1307,7 @@ func documentStatusHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		like := slug + "/%"
-		rows, err := db.Query(`SELECT slug,path FROM documents WHERE slug = ? OR slug LIKE ?`, slug, like)
+		rows, err := db.Query(`SELECT doc_id,slug,path,status,is_start_page FROM documents WHERE slug = ? OR slug LIKE ?`, slug, like)
 		if err != nil {
 			docErr(w, http.StatusInternalServerError, "query failed")
 			return
@@ -1155,52 +1315,220 @@ func documentStatusHandler(db *sql.DB) http.HandlerFunc {
 		defer rows.Close()
 
 		type docRow struct {
-			Slug string
-			Path string
+			DocID       string
+			Slug        string
+			Path        string
+			Status      string
+			IsStartPage bool
 		}
 		var docs []docRow
 		for rows.Next() {
 			var row docRow
-			if scanErr := rows.Scan(&row.Slug, &row.Path); scanErr != nil {
+			var isStartPage int
+			if scanErr := rows.Scan(&row.DocID, &row.Slug, &row.Path, &row.Status, &isStartPage); scanErr != nil {
 				docErr(w, http.StatusInternalServerError, "scan error")
 				return
 			}
+			row.IsStartPage = isStartPage != 0
 			docs = append(docs, row)
+		}
+		if err := rows.Err(); err != nil {
+			docErr(w, http.StatusInternalServerError, "query failed")
+			return
 		}
 		if len(docs) == 0 {
 			docErr(w, http.StatusNotFound, "not found")
 			return
 		}
+		if status == "unlisted" {
+			for _, doc := range docs {
+				if doc.IsStartPage {
+					httpx.WriteError(w, http.StatusConflict, "START_PAGE_MUST_STAY_PUBLISHED", "set a different start page before moving this item to Unlisted")
+					return
+				}
+			}
+		}
 
+		type statusFileMutation struct {
+			oldPath          string
+			newPath          string
+			oldContent       []byte
+			replacedNewPath  bool
+			previousNewBytes []byte
+		}
+		type statusPlan struct {
+			doc         docRow
+			nextPath    string
+			nextContent string
+			title       string
+		}
+		plans := make([]statusPlan, 0, len(docs))
+		mutations := make([]statusFileMutation, 0, len(docs))
 		for _, doc := range docs {
 			content, readErr := os.ReadFile(doc.Path)
 			if readErr != nil {
 				docErr(w, http.StatusNotFound, "not found")
 				return
 			}
-			next, _ := setFrontMatterField(string(content), "status", status)
-			if writeErr := os.WriteFile(doc.Path, []byte(next), 0o644); writeErr != nil {
+			nextContent, _ := setFrontMatterField(string(content), "status", status)
+			nextPath, pathErr := docPathFromSlugWithHint(doc.Slug, status, strings.EqualFold(filepath.Base(doc.Path), "_index.md"))
+			if pathErr != nil {
+				docErr(w, http.StatusBadRequest, "invalid slug")
+				return
+			}
+
+			mutation := statusFileMutation{
+				oldPath:    doc.Path,
+				newPath:    nextPath,
+				oldContent: content,
+			}
+			if doc.Path != nextPath {
+				if existing, readExistingErr := os.ReadFile(nextPath); readExistingErr == nil {
+					mutation.replacedNewPath = true
+					mutation.previousNewBytes = existing
+				} else if readExistingErr != nil && !os.IsNotExist(readExistingErr) {
+					docErr(w, http.StatusInternalServerError, "write failed")
+					return
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(nextPath), 0o755); err != nil {
 				docErr(w, http.StatusInternalServerError, "write failed")
 				return
+			}
+			if err := os.WriteFile(nextPath, []byte(nextContent), 0o644); err != nil {
+				docErr(w, http.StatusInternalServerError, "write failed")
+				return
+			}
+			if doc.Path != nextPath {
+				if err := os.Remove(doc.Path); err != nil {
+					_ = os.Remove(nextPath)
+					docErr(w, http.StatusInternalServerError, "write failed")
+					return
+				}
+			}
+			mutations = append(mutations, mutation)
+			plans = append(plans, statusPlan{
+				doc:         doc,
+				nextPath:    nextPath,
+				nextContent: nextContent,
+				title:       extractTitle(nextContent),
+			})
+		}
+		rollbackFiles := func() {
+			for i := len(mutations) - 1; i >= 0; i-- {
+				item := mutations[i]
+				if item.oldPath == item.newPath {
+					_ = os.WriteFile(item.oldPath, item.oldContent, 0o644)
+					continue
+				}
+				if err := os.MkdirAll(filepath.Dir(item.oldPath), 0o755); err == nil {
+					_ = os.WriteFile(item.oldPath, item.oldContent, 0o644)
+				}
+				if item.replacedNewPath {
+					_ = os.WriteFile(item.newPath, item.previousNewBytes, 0o644)
+				} else {
+					_ = os.Remove(item.newPath)
+				}
 			}
 		}
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		query := `UPDATE documents SET status = ?, updated_at = ? WHERE slug = ? OR slug LIKE ?`
-		args := []any{status, now, slug, like}
-		if status == "unlisted" {
-			query = `UPDATE documents SET status = ?, is_home = 0, updated_at = ? WHERE slug = ? OR slug LIKE ?`
-		}
-		res, err := db.Exec(query, args...)
+		tx, err := db.Begin()
 		if err != nil {
-			docErr(w, http.StatusInternalServerError, "update failed")
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "transaction failed")
 			return
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			docErr(w, http.StatusNotFound, "not found")
+		defer tx.Rollback()
+		for _, plan := range plans {
+			homeValue := 0
+			if status != "unlisted" {
+				var currentHome sql.NullInt64
+				if err := tx.QueryRow(`SELECT is_home FROM documents WHERE doc_id = ? OR slug = ? LIMIT 1`, plan.doc.DocID, plan.doc.Slug).Scan(&currentHome); err == nil && currentHome.Valid {
+					homeValue = int(currentHome.Int64)
+				}
+			}
+			var res sql.Result
+			if strings.TrimSpace(plan.doc.DocID) != "" {
+				res, err = tx.Exec(`UPDATE documents SET status = ?, path = ?, is_home = ?, updated_at = ? WHERE doc_id = ?`, status, plan.nextPath, homeValue, now, plan.doc.DocID)
+			} else {
+				res, err = tx.Exec(`UPDATE documents SET status = ?, path = ?, is_home = ?, updated_at = ? WHERE slug = ?`, status, plan.nextPath, homeValue, now, plan.doc.Slug)
+			}
+			if err != nil {
+				rollbackFiles()
+				docErr(w, http.StatusInternalServerError, "update failed")
+				return
+			}
+			if rowsAffected, _ := res.RowsAffected(); rowsAffected == 0 {
+				rollbackFiles()
+				docErr(w, http.StatusNotFound, "not found")
+				return
+			}
+			if strings.TrimSpace(plan.doc.DocID) != "" {
+				err = replaceDocumentsFTSByDocID(tx, plan.doc.DocID, plan.doc.Slug, plan.title, plan.nextContent)
+			} else {
+				err = replaceDocumentsFTSBySlug(tx, plan.doc.Slug, plan.title, plan.nextContent)
+			}
+			if err != nil {
+				rollbackFiles()
+				docErr(w, http.StatusInternalServerError, "search index update failed")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			rollbackFiles()
+			docErr(w, http.StatusInternalServerError, "transaction failed")
 			return
+		}
+		for _, plan := range plans {
+			if plan.doc.Path != plan.nextPath {
+				cleanupEmptyParentDirs(plan.doc.Path)
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func cleanupEmptyParentDirs(filePath string) {
+	if strings.TrimSpace(filePath) == "" {
+		return
+	}
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return
+	}
+	var stopRoot string
+	for _, root := range []string{
+		contentpath.PublishedRoot,
+		contentpath.UnlistedRoot,
+		contentpath.DraftsRoot,
+	} {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		absRoot, rootErr := filepath.Abs(root)
+		if rootErr != nil {
+			continue
+		}
+		if absPath == absRoot || strings.HasPrefix(absPath, absRoot+string(os.PathSeparator)) {
+			stopRoot = absRoot
+			break
+		}
+	}
+	if stopRoot == "" {
+		return
+	}
+	for dir := filepath.Dir(absPath); dir != "" && dir != "."; dir = filepath.Dir(dir) {
+		if dir == stopRoot || !strings.HasPrefix(dir, stopRoot+string(os.PathSeparator)) {
+			break
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			break
+		}
+		if err := os.Remove(dir); err != nil {
+			break
+		}
 	}
 }
 
@@ -1391,7 +1719,14 @@ func documentRestoreHandler(db *sql.DB) http.HandlerFunc {
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		createdAt := now
-		_, err = db.Exec(`INSERT INTO documents(slug,title,path,parent_slug,status,owner,created_at,updated_at,is_home)
+		tx, err := db.Begin()
+		if err != nil {
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
+		}
+		defer tx.Rollback()
+
+		_, err = tx.Exec(`INSERT INTO documents(slug,title,path,parent_slug,status,owner,created_at,updated_at,is_home)
 			VALUES(?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(slug) DO UPDATE SET title=excluded.title, path=excluded.path, parent_slug=excluded.parent_slug, status=excluded.status, owner=excluded.owner, updated_at=excluded.updated_at;`,
 			slug, title, path, parentVal, status, owner, createdAt, now, 0)
@@ -1399,10 +1734,19 @@ func documentRestoreHandler(db *sql.DB) http.HandlerFunc {
 			docErr(w, http.StatusInternalServerError, "db update failed")
 			return
 		}
-		db.Exec(`DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE slug = ?)`, slug)
-		db.Exec(`INSERT INTO documents_fts(rowid,slug,title,body) VALUES((SELECT id FROM documents WHERE slug = ?),?,?,?)`, slug, slug, title, string(data))
+		if err := replaceDocumentsFTSBySlug(tx, slug, title, string(data)); err != nil {
+			docErr(w, http.StatusInternalServerError, "search index update failed")
+			return
+		}
 		if u := auth.UserFromContext(r); u != nil {
-			db.Exec(`INSERT INTO audit(user_id,action,target,meta) VALUES(?,?,?,?)`, u.ID, "restore_document", slug, filePath)
+			if _, err := tx.Exec(`INSERT INTO audit(user_id,action,target,meta) VALUES(?,?,?,?)`, u.ID, "restore_document", slug, filePath); err != nil {
+				docErr(w, http.StatusInternalServerError, "audit update failed")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			docErr(w, http.StatusInternalServerError, "transaction failed")
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

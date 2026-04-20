@@ -1,5 +1,4 @@
 import { escapeHtml } from "./markdown-helpers";
-
 export function renderMarkdown(md, options = {}) {
   if (!md) return "";
   const lines = md.split(/\r?\n/);
@@ -7,30 +6,23 @@ export function renderMarkdown(md, options = {}) {
   let inCode = false;
   const resolveDocById = options.resolveDocById;
   const resolveDocBySlug = options.resolveDocBySlug;
-
   const listStack = [];
-
   const closeAllLists = () => {
     while (listStack.length) {
       const top = listStack.pop();
       html += `</${top.type}>`;
     }
   };
-
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine;
     if (/^(?:\t|\s{4,})\S/.test(line)) {
       const afterIndent = line.replace(/^\t|^\s{4}/, "");
-      if (/^(-\s+|\d+\.\s+)/.test(afterIndent)) {
-      } else {
+      if (!/^(-\s+|\d+\.\s+)/.test(afterIndent)) {
         closeAllLists();
         html += '<pre class="md-code"><code>';
         let j = i;
-        while (
-          j < lines.length &&
-          (lines[j].trim() === "" || /^(?:\t|\s{4,})\S/.test(lines[j]))
-        ) {
+        while (j < lines.length && (lines[j].trim() === "" || /^(?:\t|\s{4,})\S/.test(lines[j]))) {
           const ln = lines[j].replace(/^\t|^\s{0,4}/, "");
           html += escapeHtml(ln) + "\n";
           j++;
@@ -54,26 +46,19 @@ export function renderMarkdown(md, options = {}) {
       html += escapeHtml(line) + "\n";
       continue;
     }
-
     if (/^\s*(?:\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
       closeAllLists();
       html += "<hr/>";
       continue;
     }
-
     const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
     if (headingMatch) {
       closeAllLists();
       const level = Math.min(6, headingMatch[1].length);
-      const text = renderInline(
-        headingMatch[2].trim(),
-        resolveDocById,
-        resolveDocBySlug
-      );
+      const text = renderInline(headingMatch[2].trim(), resolveDocById, resolveDocBySlug);
       html += `<h${level}>${text}</h${level}>`;
       continue;
     }
-
     const bqMatch = line.match(/^\s*>\s?(.*)$/);
     if (bqMatch) {
       closeAllLists();
@@ -90,63 +75,27 @@ export function renderMarkdown(md, options = {}) {
       i = j - 1;
       continue;
     }
-
     const nextLine = lines[i + 1] || "";
-    if (
-      /\|/.test(line) &&
-      /^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)+\|?\s*$/.test(nextLine)
-    ) {
+    if (/\|/.test(line) && /^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)+\|?\s*$/.test(nextLine)) {
       closeAllLists();
-      const headers = line
-        .split("|")
-        .map((s) => s.trim())
-        .filter((s) => s !== "");
+      const headers = line.split("|").map(s => s.trim()).filter(s => s !== "");
       let j = i + 2;
       const rows = [];
       while (j < lines.length) {
         const l = lines[j];
         if (!/\|/.test(l) || l.trim() === "") break;
-        const cols = l
-          .split("|")
-          .map((s) => s.trim())
-          .filter((_, idx) => idx < headers.length);
+        const cols = l.split("|").map(s => s.trim()).filter((_, idx) => idx < headers.length);
         rows.push(cols);
         j++;
       }
-      html +=
-        '<table class="md-table"><thead><tr>' +
-        headers
-          .map(
-            (h) =>
-              `<th>${renderInline(h, resolveDocById, resolveDocBySlug)}</th>`
-          )
-          .join("") +
-        "</tr></thead>";
+      html += '<table class="md-table"><thead><tr>' + headers.map(h => `<th>${renderInline(h, resolveDocById, resolveDocBySlug)}</th>`).join("") + "</tr></thead>";
       if (rows.length) {
-        html +=
-          "<tbody>" +
-          rows
-            .map(
-              (r) =>
-                `<tr>${r
-                  .map(
-                    (c) =>
-                      `<td>${renderInline(
-                        c,
-                        resolveDocById,
-                        resolveDocBySlug
-                      )}</td>`
-                  )
-                  .join("")}</tr>`
-            )
-            .join("") +
-          "</tbody>";
+        html += "<tbody>" + rows.map(r => `<tr>${r.map(c => `<td>${renderInline(c, resolveDocById, resolveDocBySlug)}</td>`).join("")}</tr>`).join("") + "</tbody>";
       }
       html += "</table>";
       i = j - 1;
       continue;
     }
-
     const orderedMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
     const bulletMatch = line.match(/^(\s*)-\s+(.*)$/);
     if (orderedMatch || bulletMatch) {
@@ -154,12 +103,7 @@ export function renderMarkdown(md, options = {}) {
       const leading = m[1] || "";
       const indentLevel = Math.floor(leading.replace(/\t/g, "  ").length / 2);
       const type = orderedMatch ? "ol" : "ul";
-      const content = renderInline(
-        (orderedMatch ? orderedMatch[3] : bulletMatch[2]).trim(),
-        resolveDocById,
-        resolveDocBySlug
-      );
-
+      const content = renderInline((orderedMatch ? orderedMatch[3] : bulletMatch[2]).trim(), resolveDocById, resolveDocBySlug);
       while (listStack.length > indentLevel) {
         const top = listStack.pop();
         html += `</${top.type}>`;
@@ -167,16 +111,20 @@ export function renderMarkdown(md, options = {}) {
       if (listStack.length < indentLevel) {
         for (let k = listStack.length; k < indentLevel; k++) {
           html += `<${type}>`;
-          listStack.push({ type, indent: k });
+          listStack.push({
+            type,
+            indent: k
+          });
         }
       }
-
       if (!listStack.length || listStack[listStack.length - 1].type !== type) {
         if (listStack.length) html += `</${listStack.pop().type}>`;
         html += `<${type}>`;
-        listStack.push({ type, indent: indentLevel });
+        listStack.push({
+          type,
+          indent: indentLevel
+        });
       }
-
       html += `<li>${content}</li>`;
       continue;
     } else {
@@ -185,10 +133,8 @@ export function renderMarkdown(md, options = {}) {
         html += '<div class="md-gap"></div>';
         continue;
       }
-
       if (listStack.length) closeAllLists();
     }
-
     const text = renderInline(line.trim(), resolveDocById, resolveDocBySlug);
     html += `<p>${text}</p>`;
   }
@@ -198,114 +144,73 @@ export function renderMarkdown(md, options = {}) {
   }
   return html;
 }
-
 function escapeAttr(s) {
   if (!s) return "";
   const low = s.trim().toLowerCase();
   if (low.startsWith("javascript:")) return "#";
-  return (s + "")
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return (s + "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-
 function renderInline(raw, resolveDocById, resolveDocBySlug) {
   if (!raw) return "";
-
   const pieces = raw.split(/(`[^`]*`)/g);
-  return pieces
-    .map((part) => {
-      if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
-        return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
-      }
-
-      let s = part;
-
-      s = escapeHtml(s);
-
-      s = s.replace(/!\[\[([^\]]+)\]\]/g, (m, inner) => {
-        const placeholder = renderEmbedPlaceholder(
-          inner || "",
-          resolveDocById,
-          resolveDocBySlug,
-          "block"
-        );
-        return placeholder || m;
-      });
-      s = s.replace(/\{\{embed:([^}]+)\}\}/g, (m, inner) => {
-        const placeholder = renderEmbedPlaceholder(
-          inner || "",
-          resolveDocById,
-          resolveDocBySlug,
-          "inline"
-        );
-        return placeholder || m;
-      });
-
-      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
-        return `<img src="${escapeAttr(url)}" alt="${escapeHtml(alt)}" />`;
-      });
-
-      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, url) => {
-        return `<a href="${escapeAttr(url)}">${escapeHtml(label)}</a>`;
-      });
-
-      s = s.replace(/\[\[([^\]]+)\]\]/g, (m, inner) => {
-        const parts = inner.split("|");
-        const targetRaw = parts[0] ? parts[0].trim() : "";
-        if (!targetRaw) return m;
-        const override = parts[1] ? parts[1].trim() : "";
-        const lower = targetRaw.toLowerCase();
-        let slugVal = "";
-        let doc = null;
-        if (lower.startsWith("doc:")) {
-          const docId = targetRaw.slice(4).trim();
-          doc = resolveDocById?.(docId);
-          slugVal = doc?.slug || "";
-        } else if (lower.startsWith("path:")) {
-          slugVal = normalizeWikiSlug(targetRaw.slice(5));
-          if (slugVal) {
-            doc = resolveDocBySlug?.(slugVal);
-          }
-        } else {
-          slugVal = normalizeWikiSlug(targetRaw);
-          if (slugVal) {
-            doc = resolveDocBySlug?.(slugVal);
-          }
+  return pieces.map(part => {
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
+      return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+    }
+    let s = part;
+    s = escapeHtml(s);
+    s = s.replace(/!\[\[([^\]]+)\]\]/g, (m, inner) => {
+      const placeholder = renderEmbedPlaceholder(inner || "", resolveDocById, resolveDocBySlug, "block");
+      return placeholder || m;
+    });
+    s = s.replace(/\{\{embed:([^}]+)\}\}/g, (m, inner) => {
+      const placeholder = renderEmbedPlaceholder(inner || "", resolveDocById, resolveDocBySlug, "inline");
+      return placeholder || m;
+    });
+    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
+      return `<img class="md-image" src="${escapeAttr(url)}" alt="${escapeHtml(alt)}" loading="lazy" decoding="async" />`;
+    });
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, url) => {
+      return `<a href="${escapeAttr(url)}">${escapeHtml(label)}</a>`;
+    });
+    s = s.replace(/\[\[([^\]]+)\]\]/g, (m, inner) => {
+      const parts = inner.split("|");
+      const targetRaw = parts[0] ? parts[0].trim() : "";
+      if (!targetRaw) return m;
+      const override = parts[1] ? parts[1].trim() : "";
+      const lower = targetRaw.toLowerCase();
+      let slugVal = "";
+      let doc = null;
+      if (lower.startsWith("doc:")) {
+        const docId = targetRaw.slice(4).trim();
+        doc = resolveDocById?.(docId);
+        slugVal = doc?.slug || "";
+      } else if (lower.startsWith("path:")) {
+        slugVal = normalizeWikiSlug(targetRaw.slice(5));
+        if (slugVal) {
+          doc = resolveDocBySlug?.(slugVal);
         }
-        const label = override || doc?.title || doc?.slug || targetRaw;
-        const encodedTarget = slugVal
-          ? encodeURIComponent(slugVal)
-          : encodeURIComponent(targetRaw);
-        const docIdAttr = doc?.doc_id
-          ? ` data-doc-id="${escapeAttr(doc.doc_id)}"`
-          : "";
-        const slugAttr = ` data-wiki-slug="${encodedTarget}"`;
-        const href = slugVal
-          ? `#doc-${encodedTarget}`
-          : `#wiki-${encodedTarget}`;
-        const classes = ["wiki-link"];
-        if (doc) classes.push("wiki-link-resolved");
-        return `<a class="${classes.join(
-          " "
-        )}"${slugAttr}${docIdAttr} href="${href}">${escapeHtml(label)}</a>`;
-      });
-
-      s = s.replace(/\*\*([^*]+)\*\*/g, (m, t) => `<strong>${t}</strong>`);
-
-      s = s.replace(/\*([^*]+)\*/g, (m, t) => `<em>${t}</em>`);
-
-      s = s.replace(
-        /(https?:\/\/[^\s<]+)/g,
-        (m) => `<a href="${escapeAttr(m)}">${escapeHtml(m)}</a>`
-      );
-      return s;
-    })
-    .join("");
+      } else {
+        slugVal = normalizeWikiSlug(targetRaw);
+        if (slugVal) {
+          doc = resolveDocBySlug?.(slugVal);
+        }
+      }
+      const label = override || doc?.title || doc?.slug || targetRaw;
+      const encodedTarget = slugVal ? encodeURIComponent(slugVal) : encodeURIComponent(targetRaw);
+      const docIdAttr = doc?.doc_id ? ` data-doc-id="${escapeAttr(doc.doc_id)}"` : "";
+      const slugAttr = ` data-wiki-slug="${encodedTarget}"`;
+      const href = slugVal ? `#doc-${encodedTarget}` : `#wiki-${encodedTarget}`;
+      const classes = ["wiki-link"];
+      if (doc) classes.push("wiki-link-resolved");
+      return `<a class="${classes.join(" ")}"${slugAttr}${docIdAttr} href="${href}">${escapeHtml(label)}</a>`;
+    });
+    s = s.replace(/\*\*([^*]+)\*\*/g, (m, t) => `<strong>${t}</strong>`);
+    s = s.replace(/\*([^*]+)\*/g, (m, t) => `<em>${t}</em>`);
+    s = s.replace(/(https?:\/\/[^\s<]+)/g, m => `<a href="${escapeAttr(m)}">${escapeHtml(m)}</a>`);
+    return s;
+  }).join("");
 }
-
 function normalizeWikiSlug(raw) {
   if (!raw) return "";
   let slug = raw;
@@ -320,27 +225,19 @@ function normalizeWikiSlug(raw) {
   slug = slug.replace(/\\/g, "/");
   return slug;
 }
-
 function renderEmbedPlaceholder(raw, resolveDocById, resolveDocBySlug, mode) {
   const info = parseEmbedTarget(raw, resolveDocById, resolveDocBySlug);
   if (!info) return "";
   const attrs = [];
-  if (info.slug)
-    attrs.push(`data-embed-slug="${encodeURIComponent(info.slug)}"`);
-  if (info.fragment)
-    attrs.push(`data-embed-fragment="${escapeAttr(info.fragment)}"`);
+  if (info.slug) attrs.push(`data-embed-slug="${encodeURIComponent(info.slug)}"`);
+  if (info.fragment) attrs.push(`data-embed-fragment="${escapeAttr(info.fragment)}"`);
   if (info.docId) attrs.push(`data-doc-id="${escapeAttr(info.docId)}"`);
   attrs.push(`data-embed-mode="${mode}"`);
   const label = info.alias || info.label || info.title || "Embed";
   const hint = mode === "block" ? "Embedded page preview" : "Embedded view";
   const title = info.title || label;
-  return `<span class="md-embed" ${attrs.join(" ")} title="Embed ${escapeAttr(
-    title
-  )}"><span class="md-embed-label">${escapeHtml(
-    label
-  )}</span><span class="md-embed-hint">${hint}</span></span>`;
+  return `<span class="md-embed" ${attrs.join(" ")} title="Embed ${escapeAttr(title)}"><span class="md-embed-label">${escapeHtml(label)}</span><span class="md-embed-hint">${hint}</span></span>`;
 }
-
 function parseEmbedTarget(raw, resolveDocById, resolveDocBySlug) {
   if (!raw) return null;
   const trimmed = raw.trim();
@@ -377,5 +274,13 @@ function parseEmbedTarget(raw, resolveDocById, resolveDocBySlug) {
   }
   const title = doc?.title || doc?.slug || slug || target;
   const label = alias || title;
-  return { slug, fragment, alias, docId, doc, label, title };
+  return {
+    slug,
+    fragment,
+    alias,
+    docId,
+    doc,
+    label,
+    title
+  };
 }

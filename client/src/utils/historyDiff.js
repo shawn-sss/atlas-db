@@ -2,11 +2,9 @@ const DIFF_MARKERS = {
   insert: "+",
   delete: "-",
   change: "~",
-  equal: " ",
+  equal: " "
 };
-
-export const getHistoryDiffMarker = (type) => DIFF_MARKERS[type] || " ";
-
+export const getHistoryDiffMarker = type => DIFF_MARKERS[type] || " ";
 export function buildHistoryDiffSummary(segments = []) {
   const rows = [];
   let oldLine = 1;
@@ -16,18 +14,15 @@ export function buildHistoryDiffSummary(segments = []) {
   let current = {
     parts: [],
     hasOld: false,
-    hasNew: false,
+    hasNew: false
   };
-
   const pushLine = () => {
     if (current.parts.length === 0) {
       return;
     }
-
-    const hasInsert = current.parts.some((part) => part.type === "insert");
-    const hasDelete = current.parts.some((part) => part.type === "delete");
+    const hasInsert = current.parts.some(part => part.type === "insert");
+    const hasDelete = current.parts.some(part => part.type === "delete");
     let lineType = "equal";
-
     if (hasInsert && hasDelete) {
       lineType = "change";
     } else if (hasInsert) {
@@ -35,15 +30,13 @@ export function buildHistoryDiffSummary(segments = []) {
     } else if (hasDelete) {
       lineType = "delete";
     }
-
     rows.push({
       key: `${rows.length}-${oldLine}-${newLine}`,
       type: lineType,
       oldLine: current.hasOld ? oldLine : null,
       newLine: current.hasNew ? newLine : null,
-      parts: current.parts,
+      parts: current.parts
     });
-
     if (current.hasOld) {
       oldLine += 1;
     }
@@ -58,28 +51,27 @@ export function buildHistoryDiffSummary(segments = []) {
       added += 1;
       removed += 1;
     }
-
-    current = { parts: [], hasOld: false, hasNew: false };
+    current = {
+      parts: [],
+      hasOld: false,
+      hasNew: false
+    };
   };
-
-  segments.forEach((segment) => {
+  segments.forEach(segment => {
     const text = segment?.text ?? "";
     if (text.length === 0) {
       return;
     }
-
     const lines = text.split("\n");
     lines.forEach((line, lineIndex) => {
       const isLast = lineIndex === lines.length - 1;
       const isNewline = !isLast;
       const shouldAddBlank = line === "" && isNewline;
-
       if (line !== "" || shouldAddBlank) {
         current.parts.push({
           type: segment.type,
-          text: line,
+          text: line
         });
-
         if (segment.type === "equal" || segment.type === "delete") {
           current.hasOld = true;
         }
@@ -87,16 +79,17 @@ export function buildHistoryDiffSummary(segments = []) {
           current.hasNew = true;
         }
       }
-
       if (isNewline) {
         pushLine();
       }
     });
   });
-
   if (current.parts.length > 0) {
     pushLine();
   }
-
-  return { rows, added, removed };
+  return {
+    rows,
+    added,
+    removed
+  };
 }

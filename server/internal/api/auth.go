@@ -45,7 +45,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		httpx.WriteJSON(w, http.StatusCreated, nil)
 	})
 
-	r.With(auth.AuthMiddleware(db)).Post("/users", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Post("/users", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password, Role string }
 		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
@@ -61,6 +61,13 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 			httpErr(w, http.StatusBadRequest, "invalid role")
 			return
 		}
+		if role == "Owner" {
+			u := auth.UserFromContext(r)
+			if u == nil || !strings.EqualFold(u.Role, "Owner") {
+				httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN", "only owners can create owner accounts")
+				return
+			}
+		}
 		if _, err := createUserRecord(db, req.Username, req.Password, role); err != nil {
 			if isUniqueConstraintError(err) {
 				httpErr(w, http.StatusConflict, "username already exists")
@@ -72,7 +79,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		httpx.WriteJSON(w, http.StatusCreated, nil)
 	})
 
-	r.With(auth.AuthMiddleware(db)).Get("/users", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Admin", "Owner")).Get("/users", func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query(`SELECT id, username, role FROM users ORDER BY username`)
 		if err != nil {
 			httpErr(w, http.StatusInternalServerError, "users lookup failed")
@@ -97,7 +104,7 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		httpx.WriteJSON(w, http.StatusOK, users)
 	})
 
-	r.With(auth.AuthMiddleware(db)).Put("/users/{id}/role", func(w http.ResponseWriter, r *http.Request) {
+	r.With(auth.AuthMiddleware(db), auth.RequireRole("Owner")).Put("/users/{id}/role", func(w http.ResponseWriter, r *http.Request) {
 		idParam := chi.URLParam(r, "id")
 		userID, err := strconv.Atoi(idParam)
 		if err != nil || userID <= 0 {
@@ -113,6 +120,26 @@ func registerAuthRoutes(r chi.Router, db *sql.DB) {
 		if !ok {
 			httpErr(w, http.StatusBadRequest, "invalid role")
 			return
+		}
+		var currentRole string
+		if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, userID).Scan(&currentRole); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				httpErr(w, http.StatusNotFound, "user not found")
+				return
+			}
+			httpErr(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		if strings.EqualFold(currentRole, "Owner") && !strings.EqualFold(role, "Owner") {
+			var ownerCount int
+			if err := db.QueryRow(`SELECT COUNT(1) FROM users WHERE role = 'Owner'`).Scan(&ownerCount); err != nil {
+				httpErr(w, http.StatusInternalServerError, "owner count failed")
+				return
+			}
+			if ownerCount <= 1 {
+				httpx.WriteError(w, http.StatusConflict, "LAST_OWNER", "at least one owner account is required")
+				return
+			}
 		}
 		if _, err := db.Exec(`UPDATE users SET role = ? WHERE id = ?`, role, userID); err != nil {
 			httpErr(w, http.StatusInternalServerError, "update role failed")

@@ -1,5 +1,4 @@
 import { defineConfig } from "vite";
-
 export default defineConfig({
   server: {
     port: 5173,
@@ -7,12 +6,12 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:8080",
-        changeOrigin: true,
+        changeOrigin: true
       },
       "/uploads": {
         target: "http://localhost:8080",
-        changeOrigin: true,
-      },
-    },
-  },
+        changeOrigin: true
+      }
+    }
+  }
 });

@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { apiFetch } from "../../../../../api/client";
 import ROUTES from "../../../../../api/routes";
-
-export default function BackupsSection({ canAdmin }) {
+export default function BackupsSection({
+  canAdmin
+}) {
   const [list, setList] = useState([]);
   const [busy, setBusy] = useState(false);
   const [file, setFile] = useState(null);
   const [error, setError] = useState(null);
-
   const fetchList = async () => {
     setError(null);
     try {
@@ -18,16 +18,16 @@ export default function BackupsSection({ canAdmin }) {
       setList([]);
     }
   };
-
   useEffect(() => {
     fetchList();
   }, []);
-
   async function createBackup() {
     setBusy(true);
     setError(null);
     try {
-      await apiFetch(ROUTES.backup, { method: "POST" });
+      await apiFetch(ROUTES.backup, {
+        method: "POST"
+      });
       await fetchList();
       alert("Backup created");
     } catch (err) {
@@ -35,20 +35,16 @@ export default function BackupsSection({ canAdmin }) {
     }
     setBusy(false);
   }
-
   async function restore(backupFile) {
-    if (
-      !confirm(
-        `Restore from ${backupFile}? This will overwrite current content.`
-      )
-    )
-      return;
+    if (!confirm(`Restore from ${backupFile}? This will overwrite current content.`)) return;
     setBusy(true);
     setError(null);
     try {
       await apiFetch(ROUTES.backupRestore, {
         method: "POST",
-        body: { file: backupFile },
+        body: {
+          file: backupFile
+        }
       });
       alert("Restored from backup; the service will restart shortly.");
     } catch (err) {
@@ -56,7 +52,6 @@ export default function BackupsSection({ canAdmin }) {
     }
     setBusy(false);
   }
-
   async function upload() {
     if (!file) {
       alert("Select a file");
@@ -67,7 +62,10 @@ export default function BackupsSection({ canAdmin }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      await apiFetch(ROUTES.backupsUpload, { method: "POST", body: fd });
+      await apiFetch(ROUTES.backupsUpload, {
+        method: "POST",
+        body: fd
+      });
       await fetchList();
       alert("Uploaded");
     } catch (err) {
@@ -75,96 +73,74 @@ export default function BackupsSection({ canAdmin }) {
     }
     setBusy(false);
   }
-
-  const handleFileChange = (event) => {
+  const handleFileChange = event => {
     setFile(event.target.files?.[0] || null);
   };
-
-  return (
-    <div className="stack">
+  return <div className="stack">
       <div className="card">
         <div className="card-title">Backups</div>
-        <div className="muted">{!canAdmin ? "Admins only" : ""}</div>
-      </div>
-      {error && (
-        <div className="banner banner-danger" style={{ marginBottom: 10 }}>
-          <div className="banner-body">{error}</div>
+        <div className="muted">
+          {canAdmin ? "Admins and owners only." : "Admins only."}
         </div>
-      )}
+      </div>
+      {!canAdmin && <div className="card">
+          <div className="muted">
+            Backup creation, download, upload, and restore are restricted to
+            admins and owners.
+          </div>
+        </div>}
+      {error && <div className="banner banner-danger" style={{
+      marginBottom: 10
+    }}>
+          <div className="banner-body">{error}</div>
+        </div>}
       <div className="card">
-        <div
-          className="row"
-          style={{ alignItems: "center", justifyContent: "space-between" }}
-        >
+        <div className="row backup-create-row" style={{
+        justifyContent: "space-between"
+      }}>
           <div>
             <div className="card-title">Create backup</div>
             <div className="muted">
               Includes markdown content, database, and history.
             </div>
           </div>
-          <button className="btn" onClick={createBackup} disabled={busy}>
+          <button className="btn" onClick={createBackup} disabled={busy || !canAdmin}>
             Create
           </button>
         </div>
       </div>
       <div className="card">
         <div className="card-title">Upload backup (.zip)</div>
-        <div className="row">
-          <input
-            className="input"
-            style={{ width: "auto" }}
-            type="file"
-            accept=".zip"
-            onChange={handleFileChange}
-          />
-          <button
-            className="btn btn-secondary"
-            onClick={upload}
-            disabled={busy}
-          >
+        <div className="row backup-upload-row">
+          <input className="input backup-upload-input" type="file" accept=".zip" onChange={handleFileChange} />
+          <button className="btn btn-secondary" onClick={upload} disabled={busy || !canAdmin}>
             Upload
           </button>
         </div>
-        {file && (
-          <div className="muted" style={{ marginTop: 4 }}>
+        {file && <div className="muted" style={{
+        marginTop: 4
+      }}>
             Selected: {file.name}
-          </div>
-        )}
+          </div>}
       </div>
       <div className="card">
         <div className="card-title">Available backups</div>
         <div className="stack">
           {list.length === 0 && <div className="muted">No backups</div>}
-          {list.map((f) => (
-            <div
-              key={f}
-              className="row"
-              style={{ justifyContent: "space-between", alignItems: "center" }}
-            >
+          {list.map(f => <div key={f} className="row backup-file-row" style={{
+          justifyContent: "space-between"
+        }}>
               <div className="list-title">{f}</div>
-              <div className="row">
-                <a
-                  className="btn btn-ghost btn-sm"
-                  href={ROUTES.backupFile + "?file=" + encodeURIComponent(f)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Download
-                </a>
-                {canAdmin && (
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => restore(f)}
-                    disabled={busy}
-                  >
+              <div className="row backup-file-actions">
+                {canAdmin && <a className="btn btn-ghost btn-sm" href={ROUTES.backupFile + "?file=" + encodeURIComponent(f)} target="_blank" rel="noreferrer">
+                    Download
+                  </a>}
+                {canAdmin && <button className="btn btn-secondary btn-sm" onClick={() => restore(f)} disabled={busy}>
                     Restore
-                  </button>
-                )}
+                  </button>}
               </div>
-            </div>
-          ))}
+            </div>)}
         </div>
       </div>
-    </div>
-  );
+    </div>;
 }

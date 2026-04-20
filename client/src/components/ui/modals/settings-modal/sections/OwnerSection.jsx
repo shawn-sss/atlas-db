@@ -1,14 +1,12 @@
 import React from "react";
 import { decodeSlug } from "../../../../../utils/slug";
-
 export default function OwnerSection({
   bootstrap,
   startPageSlug,
   onNuke,
-  nukeBusy,
+  nukeBusy
 }) {
-  return (
-    <div className="stack">
+  return <div className="stack">
       <div className="card">
         <div className="card-title">Boot details</div>
         <div className="muted">Boot ID: {bootstrap.bootId || "-"}</div>
@@ -24,15 +22,10 @@ export default function OwnerSection({
             Owner actions delete every document, database entries, uploaded
             images, backups, and config metadata.
           </div>
-          <button
-            className="btn btn-danger"
-            onClick={onNuke}
-            disabled={nukeBusy}
-          >
+          <button className="btn btn-danger" onClick={onNuke} disabled={nukeBusy}>
             {nukeBusy ? "Deleting." : "Nuke workspace"}
           </button>
         </div>
       </div>
-    </div>
-  );
+    </div>;
 }

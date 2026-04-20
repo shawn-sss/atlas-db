@@ -45,20 +45,32 @@ func FinalizeRestore(stageDir string) error {
 				return fmt.Errorf("create published folder: %w", err)
 			}
 
-			filepath.WalkDir(oldDocs, func(path string, d os.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
+			if err := filepath.WalkDir(oldDocs, func(path string, d os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.IsDir() {
 					return nil
 				}
 				rel, err := filepath.Rel(oldDocs, path)
 				if err != nil {
-					return nil
+					return err
 				}
 				dst := filepath.Join(contentpath.PublishedRoot, rel)
-				os.MkdirAll(filepath.Dir(dst), 0o755)
-				data, _ := os.ReadFile(path)
-				os.WriteFile(dst, data, 0o644)
+				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+					return err
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(dst, data, 0o644); err != nil {
+					return err
+				}
 				return nil
-			})
+			}); err != nil {
+				return fmt.Errorf("copy legacy docs: %w", err)
+			}
 		}
 	}
 
@@ -99,6 +111,8 @@ func FinalizeRestore(stageDir string) error {
 		_ = os.RemoveAll(backup)
 	}
 
-	_ = os.RemoveAll(stageDir)
+	if err := os.RemoveAll(stageDir); err != nil {
+		return fmt.Errorf("remove staging dir: %w", err)
+	}
 	return nil
 }

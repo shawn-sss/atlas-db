@@ -1,19 +1,9 @@
-﻿export function escapeHtml(value) {
-  return (value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+export function escapeHtml(value) {
+  return (value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-
-export function normalizeHeading(value) {
-  return (value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+function normalizeHeading(value) {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
-
 export function extractSection(content, fragment) {
   if (!content || !fragment) {
     return content;
@@ -28,11 +18,7 @@ export function extractSection(content, fragment) {
         if (lines[i].includes(`^${block}`)) {
           let section = lines[i];
           let j = i + 1;
-          while (
-            j < lines.length &&
-            lines[j].trim() !== "" &&
-            !lines[j].match(/^#{1,6}\s/)
-          ) {
+          while (j < lines.length && lines[j].trim() !== "" && !lines[j].match(/^#{1,6}\s/)) {
             section += "\n" + lines[j];
             j++;
           }
@@ -61,4 +47,3 @@ export function extractSection(content, fragment) {
   }
   return content;
 }
-export const escapeHTML = escapeHtml;

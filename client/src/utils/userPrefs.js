@@ -1,9 +1,7 @@
 import { SIDEBAR_PREFS_KEY_PREFIX } from "../constants/app";
 import { apiFetch } from "../api/client";
 import ROUTES from "../api/routes";
-const buildPrefsKey = (user, localKey) =>
-  localKey || `${SIDEBAR_PREFS_KEY_PREFIX}:${user?.username || "guest"}`;
-
+const buildPrefsKey = (user, localKey) => localKey || `${SIDEBAR_PREFS_KEY_PREFIX}:${user?.username || "guest"}`;
 export async function getPrefs(user, localKey) {
   const key = buildPrefsKey(user, localKey);
   if (user) {
@@ -26,12 +24,14 @@ export async function getPrefs(user, localKey) {
     return {};
   }
 }
-
 export async function savePrefs(user, prefs, localKey) {
   const key = buildPrefsKey(user, localKey);
   if (user) {
     try {
-      await apiFetch(ROUTES.userPrefs, { method: "PUT", body: prefs });
+      await apiFetch(ROUTES.userPrefs, {
+        method: "PUT",
+        body: prefs
+      });
       return true;
     } catch (err) {
       try {
@@ -49,5 +49,3 @@ export async function savePrefs(user, prefs, localKey) {
     return false;
   }
 }
-
-export default { getPrefs, savePrefs };

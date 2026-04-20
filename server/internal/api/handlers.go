@@ -1,20 +1,19 @@
 package api
 
 import (
-	"archive/zip"
 	"bytes"
 	"database/sql"
 	"errors"
 	"image"
 	stddraw "image/draw"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"atlas/internal/contentpath"
 	"atlas/internal/documents"
@@ -65,6 +64,8 @@ func detectImageType(header []byte) (ext string, mime string, ok bool) {
 
 var errUnsupportedImageType = errors.New("unsupported image type")
 
+const maxUploadedImageDimension = 2560
+
 func storeUploadedImage(src io.Reader, sniff []byte) (string, string, error) {
 	ext, mimeType, ok := detectImageType(sniff)
 	if !ok {
@@ -73,22 +74,59 @@ func storeUploadedImage(src io.Reader, sniff []byte) (string, string, error) {
 	if err := contentpath.EnsureDirs(contentpath.UploadsRoot); err != nil {
 		return "", "", err
 	}
+
+	if ext == ".gif" || ext == ".webp" {
+		fname := random.GenerateToken(12)
+		outPath := filepath.Join(contentpath.UploadsRoot, fname+ext)
+		out, err := os.Create(outPath)
+		if err != nil {
+			return "", "", err
+		}
+		defer out.Close()
+		if len(sniff) > 0 {
+			if _, err := out.Write(sniff); err != nil {
+				return "", "", err
+			}
+		}
+		if _, err := io.Copy(out, src); err != nil {
+			return "", "", err
+		}
+		return "/uploads/" + fname + ext, mimeType, nil
+	}
+
+	reader := io.MultiReader(bytes.NewReader(sniff), src)
+	img, _, err := image.Decode(reader)
+	if err != nil {
+		return "", "", err
+	}
+
+	normalized := resizeImageToFit(img, maxUploadedImageDimension)
+	outExt := ".jpg"
+	outMime := "image/jpeg"
+	if imageHasAlpha(normalized) {
+		outExt = ".png"
+		outMime = "image/png"
+	}
+
 	fname := random.GenerateToken(12)
-	outPath := filepath.Join(contentpath.UploadsRoot, fname+ext)
+	outPath := filepath.Join(contentpath.UploadsRoot, fname+outExt)
 	out, err := os.Create(outPath)
 	if err != nil {
 		return "", "", err
 	}
 	defer out.Close()
-	if len(sniff) > 0 {
-		if _, err := out.Write(sniff); err != nil {
+
+	if outMime == "image/png" {
+		if err := png.Encode(out, normalized); err != nil {
+			return "", "", err
+		}
+	} else {
+		if err := jpeg.Encode(out, normalized, &jpeg.Options{Quality: 84}); err != nil {
 			return "", "", err
 		}
 	}
-	if _, err := io.Copy(out, src); err != nil {
-		return "", "", err
-	}
-	return "/uploads/" + fname + ext, mimeType, nil
+
+	return "/uploads/" + fname + outExt, outMime, nil
 }
 
 func storeUploadedIcon(src io.Reader, sniff []byte) (string, string, error) {
@@ -151,62 +189,44 @@ func cropToSquare(img image.Image) image.Image {
 	return dst
 }
 
-func stageBackupZip(srcZip, dest string) error {
-	zr, err := zip.OpenReader(srcZip)
-	if err != nil {
-		return err
+func resizeImageToFit(img image.Image, maxDimension int) image.Image {
+	if img == nil || maxDimension <= 0 {
+		return img
 	}
-	defer zr.Close()
-
-	for _, f := range zr.File {
-		name := filepath.Clean(f.Name)
-		if name == "" || name == "." {
-			continue
-		}
-		if strings.HasPrefix(name, ".."+string(os.PathSeparator)) || strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
-			continue
-		}
-
-		destPath := filepath.Join(dest, name)
-		destAbs, _ := filepath.Abs(destPath)
-		baseAbs, _ := filepath.Abs(dest)
-		if destAbs != baseAbs && !strings.HasPrefix(destAbs, baseAbs+string(os.PathSeparator)) {
-			continue
-		}
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(destPath, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.Create(destPath)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		if _, err := io.Copy(out, rc); err != nil {
-			rc.Close()
-			out.Close()
-			return err
-		}
-		rc.Close()
-		out.Close()
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return img
+	}
+	if width <= maxDimension && height <= maxDimension {
+		return img
 	}
 
-	if info, err := os.Stat(filepath.Join(dest, "content")); err == nil && info.IsDir() {
-		return nil
+	scale := math.Min(
+		float64(maxDimension)/float64(width),
+		float64(maxDimension)/float64(height),
+	)
+	nextWidth := int(math.Round(float64(width) * scale))
+	nextHeight := int(math.Round(float64(height) * scale))
+	if nextWidth < 1 {
+		nextWidth = 1
 	}
-	if _, err := os.Stat(filepath.Join(dest, "app.db")); err == nil {
-		return nil
+	if nextHeight < 1 {
+		nextHeight = 1
 	}
-	return errors.New("backup missing content or database")
+
+	dst := image.NewRGBA(image.Rect(0, 0, nextWidth, nextHeight))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+	return dst
+}
+
+func imageHasAlpha(img image.Image) bool {
+	if img == nil {
+		return false
+	}
+	if opaque, ok := img.(interface{ Opaque() bool }); ok {
+		return !opaque.Opaque()
+	}
+	return true
 }

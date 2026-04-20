@@ -84,6 +84,9 @@ func Run() {
 			log.Printf("Content index synced successfully")
 		}
 	}
+	monitorCtx, stopContentMonitor := context.WithCancel(context.Background())
+	documents.StartContentIndexMonitor(monitorCtx, db)
+	defer stopContentMonitor()
 
 	r := chi.NewRouter()
 
@@ -189,6 +192,7 @@ func Run() {
 		log.Printf("restore requested (%s)", restorePath)
 	}
 	signal.Stop(sigCh)
+	stopContentMonitor()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

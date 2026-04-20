@@ -7,24 +7,33 @@ import { slugToPath, slugToSegments } from "../../../utils/router";
 import ModalShell from "../../ui/modals";
 import DocumentSearch from "../document-search";
 import { parseContent, parseDualPaneContent } from "./editor-helpers";
-import {
-  IconEye,
-  IconEyeSlash,
-  IconSplit,
-  IconBack,
-  IconCloudUpload,
-  IconDraft,
-  IconLink,
-  IconSquare,
-  IconRefresh,
-  IconImage,
-  IconCode,
-  IconTable,
-  IconHr,
-} from "./editor-icons";
-
+import { primeEditorResources } from "./preload";
+import { IconEye, IconEyeSlash, IconSplit, IconBack, IconCloudUpload, IconDraft, IconLink, IconRefresh, IconImage, IconCode, IconTable, IconHr } from "./editor-icons";
 const STATUS_OPTIONS = ["draft", "published", "unlisted"];
-
+function getDraftRestoreKeys({
+  slug,
+  parentSlug,
+  title
+}) {
+  const keys = [];
+  const pushKey = value => {
+    const normalized = cleanSlug(value || "");
+    if (!normalized) return;
+    const key = `atlas-editor-draft:${normalized}`;
+    if (!keys.includes(key)) {
+      keys.push(key);
+    }
+  };
+  const normalizedSlug = cleanSlug(slug || "");
+  const normalizedParent = cleanSlug(parentSlug || "");
+  const derivedTitleSlug = slugify(title || "");
+  pushKey(normalizedSlug);
+  if (derivedTitleSlug) {
+    pushKey(normalizedParent ? `${normalizedParent}/${derivedTitleSlug}` : derivedTitleSlug);
+    pushKey(derivedTitleSlug);
+  }
+  return keys;
+}
 export default function Editor({
   slug,
   initial,
@@ -43,7 +52,7 @@ export default function Editor({
   parentSlug = "",
   parentOptions = [],
   onParentSlugChange,
-  onDraftAutoSaved,
+  onDraftAutoSaved
 }) {
   const isEdit = !!slug;
   const [titleText, setTitleText] = useState(slug || "");
@@ -67,6 +76,7 @@ export default function Editor({
   const draftTimerRef = useRef(null);
   const lastSavedContentRef = useRef(null);
   const restoredDraftKeyRef = useRef(null);
+  const stagedDraftKeyRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const uploadXhrRef = useRef(null);
@@ -84,10 +94,7 @@ export default function Editor({
     const normalized = normalizeStatus(metadata?.status);
     return normalized || (isEdit ? "published" : "draft");
   });
-  const [metaCreatedBy, setMetaCreatedBy] = useState(
-    (metadata?.owner || currentUser?.username || "").trim()
-  );
-
+  const [metaCreatedBy, setMetaCreatedBy] = useState((metadata?.owner || currentUser?.username || "").trim());
   const derivedSlug = useMemo(() => slugify(titleText), [titleText]);
   const urlPrefix = useMemo(() => {
     if (isEdit) return "/doc/";
@@ -123,36 +130,28 @@ export default function Editor({
   const [cmModules, setCmModules] = useState(null);
   useEffect(() => {
     let mounted = true;
-    Promise.all([
-      import("@uiw/react-codemirror"),
-      import("@codemirror/lang-markdown"),
-      import("@codemirror/view"),
-      import("@codemirror/commands"),
-    ])
-      .then(([cmModule, langModule, viewModule, commandsModule]) => {
-        if (!mounted) return;
-        const defaultKeymap = Array.isArray(commandsModule?.defaultKeymap)
-          ? commandsModule.defaultKeymap
-          : commandsModule?.defaultKeymap || [];
-        setCmModules({
-          CodeMirror: cmModule.default || cmModule,
-          cmMarkdown: (
-            langModule &&
-            (langModule.markdown || langModule.default || langModule)
-          ).markdown
-            ? langModule.markdown
-            : langModule.default || langModule,
-          EditorView: viewModule.EditorView,
-          keymap: viewModule.keymap,
-          defaultKeymap,
-        });
-      })
-      .catch(() => {});
+    primeEditorResources().then(([cmModule, langModule, viewModule, commandsModule]) => {
+      if (!mounted) return;
+      const defaultKeymap = Array.isArray(commandsModule?.defaultKeymap) ? commandsModule.defaultKeymap : commandsModule?.defaultKeymap || [];
+      setCmModules({
+        CodeMirror: cmModule.default || cmModule,
+        cmMarkdown: (langModule && (langModule.markdown || langModule.default || langModule)).markdown ? langModule.markdown : langModule.default || langModule,
+        EditorView: viewModule.EditorView,
+        keymap: viewModule.keymap,
+        defaultKeymap
+      });
+    }).catch(() => {});
     return () => {
       mounted = false;
     };
   }, []);
-
+  const safeAbortUpload = useCallback(() => {
+    try {
+      if (uploadXhrRef.current) uploadXhrRef.current.abort();
+    } catch (err) {
+      console.warn("[Editor] abort upload", err);
+    }
+  }, []);
   useEffect(() => {
     const parsed = parseContent(initial || "", slug || "");
     const nextTitle = parsed.title || slug || "";
@@ -167,13 +166,25 @@ export default function Editor({
     setStagedDraft(null);
     setDraftRestored(false);
     restoredDraftKeyRef.current = null;
+    stagedDraftKeyRef.current = null;
     lastSavedContentRef.current = null;
     draftSlugRef.current = null;
     lastDraftSavedRef.current = null;
     autoSlugFromTitleRef.current = !String(nextTitle || "").trim();
     try {
-      const d = localStorage.getItem(`atlas-editor-draft:${nextSlug}`);
-      if (d && d !== (initial || "")) setStagedDraft(d);
+      const draftKeys = getDraftRestoreKeys({
+        slug,
+        parentSlug,
+        title: nextTitle
+      });
+      const storedDraft = draftKeys.map(key => ({
+        key,
+        value: localStorage.getItem(key)
+      })).find(entry => entry.value && entry.value !== (initial || ""));
+      if (storedDraft) {
+        stagedDraftKeyRef.current = storedDraft.key;
+        setStagedDraft(storedDraft.value);
+      }
     } catch (e) {
       console.warn("[Editor] read draft", e);
     }
@@ -192,22 +203,18 @@ export default function Editor({
     return () => {
       safeAbortUpload();
     };
-  }, [initial, slug, initialFolder, isEdit]);
-
+  }, [initial, slug, initialFolder, isEdit, parentSlug, safeAbortUpload]);
   useEffect(() => {
     const normalized = normalizeStatus(metadata?.status);
     setMetaStatus(normalized || (isEdit ? "published" : "draft"));
     setMetaCreatedBy((metadata?.owner || currentUser?.username || "").trim());
   }, [metadata, currentUser?.username, isEdit]);
-
   useEffect(() => {
     if (onSlugChange) onSlugChange(saveSlug);
   }, [saveSlug, onSlugChange]);
-
   useEffect(() => {
     if (isDualPane) setShowPreview(true);
   }, [isDualPane]);
-
   const fullContent = useMemo(() => {
     const heading = titleText.trim() ? `# ${titleText.trim()}` : "";
     const body = bodyText || "";
@@ -217,7 +224,6 @@ export default function Editor({
     if (heading) return heading + "\n";
     return body;
   }, [titleText, bodyText]);
-
   const dualPaneValue = useMemo(() => {
     const titleLine = `# ${titleText.trim()}`;
     if (bodyText) {
@@ -225,20 +231,11 @@ export default function Editor({
     }
     return `${titleLine}\n`;
   }, [titleText, bodyText]);
-
   const extensions = useMemo(() => {
     if (!cmModules) return [];
     try {
-      const md =
-        typeof cmModules.cmMarkdown === "function"
-          ? cmModules.cmMarkdown()
-          : cmModules.cmMarkdown && cmModules.cmMarkdown.markdown
-          ? cmModules.cmMarkdown.markdown()
-          : null;
-      const lineWrap =
-        cmModules.EditorView && cmModules.EditorView.lineWrapping
-          ? cmModules.EditorView.lineWrapping
-          : null;
+      const md = typeof cmModules.cmMarkdown === "function" ? cmModules.cmMarkdown() : cmModules.cmMarkdown && cmModules.cmMarkdown.markdown ? cmModules.cmMarkdown.markdown() : null;
+      const lineWrap = cmModules.EditorView && cmModules.EditorView.lineWrapping ? cmModules.EditorView.lineWrapping : null;
       return [md, lineWrap].filter(Boolean);
     } catch (e) {
       return [];
@@ -248,31 +245,22 @@ export default function Editor({
     const byId = new Map();
     const bySlug = new Map();
     const list = Array.isArray(linkables) ? linkables : [];
-    list.forEach((item) => {
+    list.forEach(item => {
       if (item?.doc_id) byId.set(item.doc_id, item);
       if (item?.slug) bySlug.set(cleanSlug(item.slug), item);
     });
     return {
-      resolveDocById: (id) => byId.get(id),
-      resolveDocBySlug: (slug) =>
-        slug ? bySlug.get(cleanSlug(slug)) : undefined,
+      resolveDocById: id => byId.get(id),
+      resolveDocBySlug: slug => slug ? bySlug.get(cleanSlug(slug)) : undefined
     };
   }, [linkables]);
-  const previewHtml = useMemo(
-    () => renderMarkdown(fullContent, linkResolver),
-    [fullContent, linkResolver]
-  );
+  const previewHtml = useMemo(() => renderMarkdown(fullContent, linkResolver), [fullContent, linkResolver]);
   const filteredLinks = useMemo(() => {
     const q = documentQuery.trim().toLowerCase();
     const list = Array.isArray(linkables) ? linkables : [];
     if (!q) return list;
-    return list.filter(
-      (l) =>
-        (l?.slug || "").toLowerCase().includes(q) ||
-        (l?.title || "").toLowerCase().includes(q)
-    );
+    return list.filter(l => (l?.slug || "").toLowerCase().includes(q) || (l?.title || "").toLowerCase().includes(q));
   }, [linkables, documentQuery]);
-
   const metadataReady = Boolean(metaStatus && metaCreatedBy.trim());
   const buildFrontMatter = (statusValue, ownerValue, docIdValue) => {
     const normalizedStatus = normalizeStatus(statusValue);
@@ -286,32 +274,30 @@ export default function Editor({
     if (!metadataReady) return "";
     return buildFrontMatter(metaStatus, metaCreatedBy, currentDocId);
   }, [metadataReady, metaStatus, metaCreatedBy, currentDocId]);
-
-  const isDraftMetadata = useMemo(
-    () => normalizeStatus(metadata?.status) === "draft",
-    [metadata?.status]
-  );
+  const isDraftMetadata = useMemo(() => normalizeStatus(metadata?.status) === "draft", [metadata?.status]);
   const presenceSlug = useMemo(() => {
     if (!isEdit || isDraftMetadata) return "";
     return cleanSlug(slug || "");
   }, [isEdit, isDraftMetadata, slug]);
   const currentUsername = (currentUser?.username || "").trim();
-
-  const fetchPresence = useCallback(async (targetSlug) => {
+  const fetchPresence = useCallback(async targetSlug => {
     const url = ROUTES.documentPresence(encodeURIComponent(targetSlug));
-    const res = await fetch(url, { method: "GET", cache: "no-store" });
+    const res = await fetch(url, {
+      method: "GET",
+      cache: "no-store"
+    });
     if (!res.ok) {
       throw new Error("presence fetch failed");
     }
     const data = await res.json().catch(() => []);
     return Array.isArray(data) ? data : [];
   }, []);
-
-  const updatePresence = useCallback(async (targetSlug) => {
+  const updatePresence = useCallback(async targetSlug => {
     const url = ROUTES.documentPresence(encodeURIComponent(targetSlug));
-    await fetch(url, { method: "POST" });
+    await fetch(url, {
+      method: "POST"
+    });
   }, []);
-
   useEffect(() => {
     if (!presenceSlug) {
       setPresenceEditors([]);
@@ -322,7 +308,11 @@ export default function Editor({
     const tick = async () => {
       try {
         await updatePresence(presenceSlug);
-      } catch (e) {}
+      } catch (err) {
+        if (mounted) {
+          setPresenceUnavailable(true);
+        }
+      }
       try {
         const list = await fetchPresence(presenceSlug);
         if (!mounted) return;
@@ -340,93 +330,87 @@ export default function Editor({
       clearInterval(id);
     };
   }, [presenceSlug, fetchPresence, updatePresence]);
-
   const presenceInfo = useMemo(() => {
     if (!presenceSlug) {
       return {
         label: "Editing (unsaved)",
         title: "Presence starts after a URL is set.",
-        alert: false,
+        alert: false
       };
     }
     if (presenceUnavailable) {
       return {
         label: "Editing status unavailable",
         title: "Presence data could not be loaded.",
-        alert: false,
+        alert: false
       };
     }
-    const names = Array.isArray(presenceEditors)
-      ? presenceEditors
-          .map((entry) => (entry?.username || "").trim())
-          .filter(Boolean)
-      : [];
+    const names = Array.isArray(presenceEditors) ? presenceEditors.map(entry => (entry?.username || "").trim()).filter(Boolean) : [];
     const uniqueNames = Array.from(new Set(names));
     const normalizedSelf = currentUsername.toLowerCase();
-    const otherEditors = uniqueNames.filter(
-      (name) => name.toLowerCase() !== normalizedSelf
-    );
+    const otherEditors = uniqueNames.filter(name => name.toLowerCase() !== normalizedSelf);
     if (!otherEditors.length) {
       return {
         label: "Editing: only you",
         title: "No other active editors.",
-        alert: false,
+        alert: false
       };
     }
-    const formatList =
-      otherEditors.length > 2
-        ? `${otherEditors.slice(0, 2).join(", ")} +${
-            otherEditors.length - 2
-          } more`
-        : otherEditors.join(", ");
+    const formatList = otherEditors.length > 2 ? `${otherEditors.slice(0, 2).join(", ")} +${otherEditors.length - 2} more` : otherEditors.join(", ");
     return {
       label: `Editing with ${formatList}`,
       title: `Also editing: ${otherEditors.join(", ")}`,
-      alert: true,
+      alert: true
     };
   }, [presenceEditors, presenceSlug, presenceUnavailable, currentUsername]);
-
-  const checkSlugConflict = useCallback(
-    async (checkSlug) => {
-      try {
-        const checkEndpoint = endpointPrefix + encodeURI(checkSlug);
-        const res = await fetch(checkEndpoint, {
-          method: "GET",
-          cache: "no-store",
-          credentials: "include",
-        });
-        if (!res.ok) return { exists: false, conflict: false };
-        const data = await res.json().catch(() => null);
-        const docId = (data?.doc_id || "").trim();
-        const status = normalizeStatus((data?.status || "").toLowerCase());
-        const owner = (data?.owner || "").trim();
-        const currentId = (currentDocId || "").trim();
-        if (currentId && docId && currentId === docId) {
-          return { exists: true, conflict: false, status, owner, docId };
-        }
-        return { exists: true, conflict: true, status, owner, docId };
-      } catch (e) {
-        return { exists: false, conflict: false };
+  const checkSlugConflict = useCallback(async checkSlug => {
+    try {
+      const checkEndpoint = endpointPrefix + encodeURI(checkSlug);
+      const res = await fetch(checkEndpoint, {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include"
+      });
+      if (!res.ok) return {
+        exists: false,
+        conflict: false
+      };
+      const data = await res.json().catch(() => null);
+      const docId = (data?.doc_id || "").trim();
+      const status = normalizeStatus((data?.status || "").toLowerCase());
+      const owner = (data?.owner || "").trim();
+      const currentId = (currentDocId || "").trim();
+      if (currentId && docId && currentId === docId) {
+        return {
+          exists: true,
+          conflict: false,
+          status,
+          owner,
+          docId
+        };
       }
-    },
-    [currentDocId, currentUsername, endpointPrefix]
-  );
-
-  const formatOverwriteMessage = useCallback(
-    (conflictSlug, conflictStatus) => {
-      return `A document already exists at ${slugToPath(
-        conflictSlug
-      )}. Saving will overwrite it.`;
-    },
-    []
-  );
-
+      return {
+        exists: true,
+        conflict: true,
+        status,
+        owner,
+        docId
+      };
+    } catch (e) {
+      return {
+        exists: false,
+        conflict: false
+      };
+    }
+  }, [currentDocId, endpointPrefix]);
+  const formatOverwriteMessage = useCallback(conflictSlug => {
+    return `A document already exists at ${slugToPath(conflictSlug)}. Saving will overwrite it.`;
+  }, []);
   const closeOverwritePrompt = () => {
     setOverwritePrompt(false);
     setOverwriteMessage("");
     setOverwriteTarget(null);
   };
-
   const confirmOverwrite = async () => {
     const target = overwriteTarget;
     closeOverwritePrompt();
@@ -436,8 +420,7 @@ export default function Editor({
     }
     await performSave(null, true);
   };
-
-  const safeRemoveLocalStorageKey = (key, label) => {
+  const safeRemoveLocalStorageKey = useCallback((key, label) => {
     if (!key) return;
     if (typeof window === "undefined" || !window.localStorage) return;
     try {
@@ -445,75 +428,108 @@ export default function Editor({
     } catch (err) {
       console.warn("[Editor] localStorage remove", label || key, err);
     }
-  };
-
-  const safeAbortUpload = () => {
-    try {
-      if (uploadXhrRef.current) uploadXhrRef.current.abort();
-    } catch (err) {
-      console.warn("[Editor] abort upload", err);
-    }
-  };
-
-  const updateViewRef = (update) => {
+  }, []);
+  const resetUploadState = useCallback(() => {
+    setUploading(false);
+    setUploadProgress(0);
+    uploadXhrRef.current = null;
+  }, []);
+  const insertImageMarkdown = useCallback((view, source) => {
+    if (!view || !source) return;
+    view.dispatch({
+      changes: {
+        from: view.state.selection.main.from,
+        to: view.state.selection.main.to,
+        insert: `![](${source})\n`
+      }
+    });
+  }, []);
+  const insertLocalImage = useCallback((view, file) => {
+    if (!view || !file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = typeof reader.result === "string" ? reader.result : "";
+      if (!data) return;
+      insertImageMarkdown(view, data);
+    };
+    reader.readAsDataURL(file);
+  }, [insertImageMarkdown]);
+  const updateViewRef = update => {
     if (update?.view) viewRef.current = update.view;
   };
-
   const focusEditor = () => {
     const view = viewRef.current;
     if (view) view.focus();
   };
-
-  const insertSnippet = (snippet) => {
+  const insertSnippet = snippet => {
     const view = viewRef.current;
     if (!view) {
-      setBodyText((v) => v + snippet);
+      setBodyText(v => v + snippet);
       return;
     }
-    const { from, to } = view.state.selection.main;
+    const {
+      from,
+      to
+    } = view.state.selection.main;
     view.dispatch({
-      changes: { from, to, insert: snippet },
-      selection: { anchor: from + snippet.length },
+      changes: {
+        from,
+        to,
+        insert: snippet
+      },
+      selection: {
+        anchor: from + snippet.length
+      }
     });
     focusEditor();
   };
-
   const wrapSelection = (prefix, suffix = prefix) => {
     const view = viewRef.current;
     if (!view) {
-      setBodyText((v) => `${prefix}${v}${suffix}`);
+      setBodyText(v => `${prefix}${v}${suffix}`);
       return;
     }
-    const { from, to } = view.state.selection.main;
+    const {
+      from,
+      to
+    } = view.state.selection.main;
     const selected = view.state.doc.sliceString(from, to);
     const insert = `${prefix}${selected || ""}${suffix}`;
     view.dispatch({
-      changes: { from, to, insert },
-      selection: { anchor: from + insert.length },
+      changes: {
+        from,
+        to,
+        insert
+      },
+      selection: {
+        anchor: from + insert.length
+      }
     });
     focusEditor();
   };
-
-  const applyToSelectedLines = (view, transform) => {
+  const applyToSelectedLines = useCallback((view, transform) => {
     const changes = [];
     const ranges = view.state.selection.ranges;
     for (const range of ranges) {
       const startLine = view.state.doc.lineAt(range.from);
-      const endPos =
-        range.to === range.from ? range.to : Math.max(0, range.to - 1);
+      const endPos = range.to === range.from ? range.to : Math.max(0, range.to - 1);
       const endLine = view.state.doc.lineAt(endPos);
       for (let n = startLine.number; n <= endLine.number; n++) {
         const line = view.state.doc.line(n);
         const res = transform(line);
         if (!res) continue;
         if (typeof res === "string") {
-          changes.push({ from: line.from, to: line.from, insert: res });
+          changes.push({
+            from: line.from,
+            to: line.from,
+            insert: res
+          });
         } else if (res.remove && res.remove > 0) {
           const removeLen = Math.min(res.remove, line.to - line.from);
           changes.push({
             from: line.from,
             to: line.from + removeLen,
-            insert: "",
+            insert: ""
           });
         }
       }
@@ -522,59 +538,53 @@ export default function Editor({
       view.dispatch({
         changes,
         selection: view.state.selection,
-        scrollIntoView: true,
+        scrollIntoView: true
       });
       return true;
     }
     return false;
-  };
-
-  const toggleBulletList = (view) => {
-    return applyToSelectedLines(view, (line) => {
+  }, []);
+  const toggleBulletList = view => {
+    return applyToSelectedLines(view, line => {
       if (/^\s*-\s+/.test(line.text)) {
         const m = line.text.match(/^(\s*)-\s+/);
-        return { remove: m ? m[0].length : 2 };
+        return {
+          remove: m ? m[0].length : 2
+        };
       }
       return "- ";
     });
   };
-
-  const toggleNumberedList = (view) => {
-    return applyToSelectedLines(view, (line) => {
+  const toggleNumberedList = view => {
+    return applyToSelectedLines(view, line => {
       if (/^\s*\d+\.\s+/.test(line.text)) {
         const m = line.text.match(/^(\s*)\d+\.\s+/);
-        return { remove: m ? m[0].length : 3 };
+        return {
+          remove: m ? m[0].length : 3
+        };
       }
       return "1. ";
     });
   };
-
-  const indentLines = (view) => applyToSelectedLines(view, () => "  ");
-
-  const outdentLines = (view) => {
-    return applyToSelectedLines(view, (line) => {
+  const indentLines = useCallback(view => applyToSelectedLines(view, () => "  "), [applyToSelectedLines]);
+  const outdentLines = useCallback(view => {
+    return applyToSelectedLines(view, line => {
       const m = line.text.match(/^(\t| {2})/);
-      if (m) return { remove: m[0].length };
+      if (m) return {
+        remove: m[0].length
+      };
       return null;
     });
-  };
-
-  const insertDocument = (
-    slugValue,
-    asEmbed = documentInsertMode === "embed"
-  ) => {
+  }, [applyToSelectedLines]);
+  const insertDocument = (slugValue, asEmbed = documentInsertMode === "embed") => {
     if (!slugValue) return;
     const snippet = asEmbed ? `![[${slugValue}]]` : `[[${slugValue}]]`;
     insertSnippet(snippet);
     setShowDocumentSearch(false);
     setDocumentQuery("");
   };
-
   const promptAndInsertLink = async () => {
-    let url = window.prompt(
-      "Enter link URL or page slug (for wiki use [[slug]]):",
-      "https://"
-    );
+    let url = window.prompt("Enter link URL or page slug (for wiki use [[slug]]):", "https://");
     if (!url) return;
     if (url.startsWith("[[") && url.endsWith("]]")) {
       insertSnippet(url);
@@ -584,33 +594,30 @@ export default function Editor({
     const insert = text ? `[${text}](${url})` : `<${url}>`;
     insertSnippet(insert);
   };
-
   const promptAndInsertImage = async () => {
     let url = window.prompt("Enter image URL (or paste data URL):", "");
     if (!url) return;
     const alt = window.prompt("Alt text (optional):", "");
     insertSnippet(`![${alt || ""}](${url})`);
   };
-
-  const toggleBlockquote = (view) => {
-    return applyToSelectedLines(view, (line) => {
+  const toggleBlockquote = view => {
+    return applyToSelectedLines(view, line => {
       if (/^\s*>\s+/.test(line.text)) {
         const m = line.text.match(/^(\s*>\s+)/);
-        return { remove: m ? m[0].length : 2 };
+        return {
+          remove: m ? m[0].length : 2
+        };
       }
       return "> ";
     });
   };
-
   const insertTable = () => {
     const tpl = `\n| Column 1 | Column 2 | Column 3 |\n|---|---:|---:|\n| text | text | text |\n\n`;
     insertSnippet(tpl);
   };
-
   const insertHorizontalRule = () => {
     insertSnippet("\n---\n");
   };
-
   const pasteImageHandler = useMemo(() => {
     if (!cmModules || !cmModules.EditorView) return null;
     return cmModules.EditorView.domEventHandlers({
@@ -626,17 +633,18 @@ export default function Editor({
                 const form = new FormData();
                 form.append("file", file, file.name || "pasted.png");
                 try {
+                  const fallbackToLocalImage = () => {
+                    insertLocalImage(view, file);
+                    resetUploadState();
+                  };
                   const xhr = new XMLHttpRequest();
                   uploadXhrRef.current = xhr;
                   setUploading(true);
                   setUploadProgress(0);
                   xhr.open("POST", ROUTES.uploadImageXHR, true);
                   xhr.withCredentials = true;
-                  xhr.upload.onprogress = (ev) => {
-                    if (ev.lengthComputable)
-                      setUploadProgress(
-                        Math.round((ev.loaded / ev.total) * 100)
-                      );
+                  xhr.upload.onprogress = ev => {
+                    if (ev.lengthComputable) setUploadProgress(Math.round(ev.loaded / ev.total * 100));
                   };
                   xhr.onload = () => {
                     try {
@@ -644,89 +652,31 @@ export default function Editor({
                         const j = JSON.parse(xhr.responseText || "{}");
                         const url = j && j.url ? j.url : null;
                         if (url) {
-                          view.dispatch({
-                            changes: {
-                              from: view.state.selection.main.from,
-                              to: view.state.selection.main.to,
-                              insert: `![](${url})\n`,
-                            },
-                          });
-                          setUploading(false);
-                          setUploadProgress(0);
-                          uploadXhrRef.current = null;
+                          insertImageMarkdown(view, url);
+                          resetUploadState();
                           return;
                         }
                       }
                     } catch (e) {
                       console.warn("[Editor] parse upload response", e);
                     }
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const data = reader.result;
-                      view.dispatch({
-                        changes: {
-                          from: view.state.selection.main.from,
-                          to: view.state.selection.main.to,
-                          insert: `![](${data})\n`,
-                        },
-                      });
-                    };
-                    reader.readAsDataURL(file);
-                    setUploading(false);
-                    setUploadProgress(0);
-                    uploadXhrRef.current = null;
+                    fallbackToLocalImage();
                   };
                   xhr.onerror = () => {
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const data = reader.result;
-                      view.dispatch({
-                        changes: {
-                          from: view.state.selection.main.from,
-                          to: view.state.selection.main.to,
-                          insert: `![](${data})\n`,
-                        },
-                      });
-                    };
-                    reader.readAsDataURL(file);
-                    setUploading(false);
-                    setUploadProgress(0);
-                    uploadXhrRef.current = null;
+                    fallbackToLocalImage();
                   };
                   xhr.onabort = () => {
-                    setUploading(false);
-                    setUploadProgress(0);
-                    uploadXhrRef.current = null;
+                    resetUploadState();
                   };
                   xhr.send(form);
                 } catch (e) {
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    const data = reader.result;
-                    view.dispatch({
-                      changes: {
-                        from: view.state.selection.main.from,
-                        to: view.state.selection.main.to,
-                        insert: `![](${data})\n`,
-                      },
-                    });
-                  };
-                  reader.readAsDataURL(file);
+                  insertLocalImage(view, file);
+                  resetUploadState();
                 }
               } catch (e) {
                 console.warn("[Editor] upload via XHR failed", e);
-                const reader = new FileReader();
-                reader.onload = () => {
-                  const data = reader.result;
-                  view.dispatch({
-                    changes: {
-                      from: view.state.selection.main.from,
-                      to: view.state.selection.main.to,
-                      insert: `![](${data})\n`,
-                    },
-                  });
-                };
-                reader.readAsDataURL(file);
+                insertLocalImage(view, file);
+                resetUploadState();
               }
               event.preventDefault();
               return true;
@@ -736,111 +686,126 @@ export default function Editor({
           console.warn("[Editor] handle pasted image", e);
         }
         return false;
-      },
+      }
     });
-  }, [cmModules]);
-
+  }, [cmModules, insertImageMarkdown, insertLocalImage, resetUploadState]);
   const editorKeymap = useMemo(() => {
     if (!cmModules || !cmModules.keymap || !cmModules.EditorView) return null;
     try {
-      const { keymap, defaultKeymap } = cmModules;
-      return keymap.of([
-        {
-          key: "Mod-s",
-          run: () => {
-            const fn = saveRef.current;
-            if (fn) {
-              fn();
-              return true;
+      const {
+        keymap,
+        defaultKeymap
+      } = cmModules;
+      return keymap.of([{
+        key: "Mod-s",
+        run: () => {
+          const fn = saveRef.current;
+          if (fn) {
+            fn();
+            return true;
+          }
+          return false;
+        }
+      }, {
+        key: "Mod-Enter",
+        run: () => {
+          const fn = saveRef.current;
+          if (fn) {
+            fn();
+            return true;
+          }
+          return false;
+        }
+      }, {
+        key: "Mod-Shift-p",
+        run: () => {
+          setShowPreview(s => !s);
+          return true;
+        }
+      }, {
+        key: "Tab",
+        run: view => {
+          const did = indentLines(view);
+          if (did) return true;
+          const {
+            from,
+            to
+          } = view.state.selection.main;
+          view.dispatch({
+            changes: {
+              from: from,
+              to: to,
+              insert: "  "
+            },
+            selection: {
+              anchor: from + 2
             }
-            return false;
-          },
-        },
-        {
-          key: "Mod-Enter",
-          run: () => {
-            const fn = saveRef.current;
-            if (fn) {
-              fn();
-              return true;
+          });
+          return true;
+        }
+      }, {
+        key: "Shift-Tab",
+        run: view => {
+          return outdentLines(view) || false;
+        }
+      }, {
+        key: "Mod-b",
+        run: view => {
+          const {
+            from,
+            to
+          } = view.state.selection.main;
+          const selected = view.state.doc.sliceString(from, to);
+          const insert = `**${selected || ""}**`;
+          view.dispatch({
+            changes: {
+              from,
+              to,
+              insert
+            },
+            selection: {
+              anchor: from + insert.length
             }
-            return false;
-          },
-        },
-        {
-          key: "Mod-Shift-p",
-          run: () => {
-            setShowPreview((s) => !s);
-            return true;
-          },
-        },
-        {
-          key: "Tab",
-          run: (view) => {
-            const did = indentLines(view);
-            if (did) return true;
-            const { from, to } = view.state.selection.main;
-            view.dispatch({
-              changes: { from: from, to: to, insert: "  " },
-              selection: { anchor: from + 2 },
-            });
-            return true;
-          },
-        },
-        {
-          key: "Shift-Tab",
-          run: (view) => {
-            return outdentLines(view) || false;
-          },
-        },
-        {
-          key: "Mod-b",
-          run: (view) => {
-            const { from, to } = view.state.selection.main;
-            const selected = view.state.doc.sliceString(from, to);
-            const insert = `**${selected || ""}**`;
-            view.dispatch({
-              changes: { from, to, insert },
-              selection: { anchor: from + insert.length },
-            });
-            return true;
-          },
-        },
-        {
-          key: "Mod-i",
-          run: (view) => {
-            const { from, to } = view.state.selection.main;
-            const selected = view.state.doc.sliceString(from, to);
-            const insert = `*${selected || ""}*`;
-            view.dispatch({
-              changes: { from, to, insert },
-              selection: { anchor: from + insert.length },
-            });
-            return true;
-          },
-        },
-        ...defaultKeymap,
-      ]);
+          });
+          return true;
+        }
+      }, {
+        key: "Mod-i",
+        run: view => {
+          const {
+            from,
+            to
+          } = view.state.selection.main;
+          const selected = view.state.doc.sliceString(from, to);
+          const insert = `*${selected || ""}*`;
+          view.dispatch({
+            changes: {
+              from,
+              to,
+              insert
+            },
+            selection: {
+              anchor: from + insert.length
+            }
+          });
+          return true;
+        }
+      }, ...defaultKeymap]);
     } catch (e) {
       return null;
     }
-  }, [cmModules]);
-
+  }, [cmModules, indentLines, outdentLines]);
   const pasteHandlerExt = useMemo(() => {
     if (!cmModules || !cmModules.EditorView) return null;
     return cmModules.EditorView.domEventHandlers({
       paste: (event, view) => {
         try {
-          const text =
-            event.clipboardData &&
-            event.clipboardData.getData &&
-            event.clipboardData.getData("text/plain");
+          const text = event.clipboardData && event.clipboardData.getData && event.clipboardData.getData("text/plain");
           if (!text) return false;
           event.preventDefault();
           let processed = text;
-
           const lines = processed.split(/\r?\n/);
-          const nonEmpty = lines.filter((l) => l.trim() !== "");
+          const nonEmpty = lines.filter(l => l.trim() !== "");
           let minIndent = Infinity;
           for (const l of nonEmpty) {
             const m = l.match(/^(\s+)/);
@@ -854,11 +819,8 @@ export default function Editor({
           if (minIndent === Infinity) minIndent = 0;
           if (minIndent > 0) {
             const prefix = " ".repeat(minIndent);
-            processed = lines
-              .map((l) => (l.startsWith(prefix) ? l.slice(minIndent) : l))
-              .join("\n");
+            processed = lines.map(l => l.startsWith(prefix) ? l.slice(minIndent) : l).join("\n");
           }
-
           if (/\n?\s*\d+\.\s+/.test(processed)) {
             const pos = view.state.selection.main.from;
             const beforeLine = view.state.doc.lineAt(pos);
@@ -874,53 +836,108 @@ export default function Editor({
             }
             if (startNum === null) startNum = 1;
             let cur = startNum;
-            processed = processed
-              .split(/\r?\n/)
-              .map((l) => {
-                const m = l.match(/^(\s*)(\d+)\.\s+(.*)$/);
-                if (m) {
-                  const out = `${m[1]}${cur}. ${m[3]}`;
-                  cur++;
-                  return out;
-                }
-                if (l.trim() === "") {
-                  cur = startNum;
-                  return l;
-                }
+            processed = processed.split(/\r?\n/).map(l => {
+              const m = l.match(/^(\s*)(\d+)\.\s+(.*)$/);
+              if (m) {
+                const out = `${m[1]}${cur}. ${m[3]}`;
+                cur++;
+                return out;
+              }
+              if (l.trim() === "") {
+                cur = startNum;
                 return l;
-              })
-              .join("\n");
+              }
+              return l;
+            }).join("\n");
           }
-
           view.dispatch({
             changes: {
               from: view.state.selection.main.from,
               to: view.state.selection.main.to,
-              insert: processed,
+              insert: processed
             },
             selection: {
-              anchor: view.state.selection.main.from + processed.length,
-            },
+              anchor: view.state.selection.main.from + processed.length
+            }
           });
           return true;
         } catch (e) {
           console.warn("[Editor] normal paste", e);
           return false;
         }
-      },
+      }
     });
   }, [cmModules]);
-
-  const extensionsWithKeys = useMemo(
-    () =>
-      [...extensions, editorKeymap, pasteImageHandler, pasteHandlerExt].filter(
-        Boolean
-      ),
-    [extensions, editorKeymap, pasteHandlerExt, pasteImageHandler]
-  );
-
+  const extensionsWithKeys = useMemo(() => [...extensions, editorKeymap, pasteImageHandler, pasteHandlerExt].filter(Boolean), [extensions, editorKeymap, pasteHandlerExt, pasteImageHandler]);
   const CM = cmModules ? cmModules.CodeMirror : null;
-  const performSave = async (renameTo, overwrite = false) => {
+  const performDraftSave = useCallback(async renameTo => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    if (!metadataReady) {
+      setErr("Complete the metadata fields before saving.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const targetSlug = isEdit ? slug || "" : fullSlug;
+      const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
+      let url = ROUTES.draft(encodeURIComponent(baseSlug));
+      if (renameTo) {
+        const params = new URLSearchParams();
+        params.set("rename_to", renameTo);
+        url += `?${params.toString()}`;
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8"
+        },
+        body: fullContent
+      });
+      if (res.ok) {
+        let finalSlug = fullSlug || (isEdit ? slug || "" : saveSlug);
+        try {
+          const data = await res.json().catch(() => null);
+          if (data && data.slug) finalSlug = data.slug;
+        } catch (e) {
+          console.warn("[Editor] parse draft save response", e);
+        }
+        lastSavedContentRef.current = fullContent;
+        const keyToClear = restoredDraftKeyRef.current || draftKey;
+        safeRemoveLocalStorageKey(keyToClear, "saved draft key");
+        if (restoredDraftKeyRef.current && restoredDraftKeyRef.current !== draftKey) {
+          safeRemoveLocalStorageKey(draftKey, "old draft key");
+        }
+        restoredDraftKeyRef.current = null;
+        setStagedDraft(null);
+        setDraftRestored(false);
+        onSaved && onSaved({
+          slug: finalSlug,
+          status: "draft",
+          isNew: !isEdit
+        });
+        return;
+      }
+      if (res.status === 409) {
+        setOverwriteMessage("That URL already exists. Overwrite it?");
+        setOverwriteTarget(renameTo || null);
+        setOverwritePrompt(true);
+        setErr(null);
+        setSlugError(null);
+        setShowRenameConfirm(false);
+        return;
+      }
+      const txt = await res.text().catch(() => "");
+      setErr(txt || "Save failed: " + res.status);
+    } catch (e) {
+      setErr("Save failed: network error");
+    } finally {
+      setSaving(false);
+    }
+  }, [draftKey, folderMode, fullContent, fullSlug, isEdit, metadataReady, onSaved, safeRemoveLocalStorageKey, saveSlug, slug]);
+  const performSave = useCallback(async (renameTo, overwrite = false) => {
     if (draftTimerRef.current) {
       clearTimeout(draftTimerRef.current);
       draftTimerRef.current = null;
@@ -947,8 +964,10 @@ export default function Editor({
       const payload = `${frontMatter}${fullContent}`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: payload,
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8"
+        },
+        body: payload
       });
       if (res.ok) {
         let finalSlug = fullSlug || (isEdit ? slug || "" : saveSlug);
@@ -958,30 +977,26 @@ export default function Editor({
         } catch (e) {
           console.warn("[Editor] parse save response", e);
         }
-
         lastSavedContentRef.current = fullContent;
         const keyToClear = restoredDraftKeyRef.current || draftKey;
         safeRemoveLocalStorageKey(keyToClear, "saved draft key");
-        if (
-          restoredDraftKeyRef.current &&
-          restoredDraftKeyRef.current !== draftKey
-        ) {
+        if (restoredDraftKeyRef.current && restoredDraftKeyRef.current !== draftKey) {
           safeRemoveLocalStorageKey(draftKey, "old draft key");
         }
         restoredDraftKeyRef.current = null;
         setStagedDraft(null);
         setDraftRestored(false);
-        onSaved &&
-          onSaved({ slug: finalSlug, status: metaStatus, isNew: !isEdit });
+        onSaved && onSaved({
+          slug: finalSlug,
+          status: metaStatus,
+          isNew: !isEdit
+        });
         return;
       }
       if (res.status === 409) {
         const conflictSlug = renameTo || targetSlug;
-        let conflictStatus = null;
         if (conflictSlug) {
-          const conflict = await checkSlugConflict(conflictSlug);
-          conflictStatus = conflict.status || null;
-          setOverwriteMessage(formatOverwriteMessage(conflictSlug, conflictStatus));
+          setOverwriteMessage(formatOverwriteMessage(conflictSlug));
         } else {
           setOverwriteMessage("That URL already exists. Overwrite it?");
         }
@@ -999,91 +1014,21 @@ export default function Editor({
     } finally {
       setSaving(false);
     }
-  };
-
-  const performDraftSave = async (renameTo) => {
-    if (draftTimerRef.current) {
-      clearTimeout(draftTimerRef.current);
-      draftTimerRef.current = null;
-    }
-    if (!metadataReady) {
-      setErr("Complete the metadata fields before saving.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const targetSlug = isEdit ? slug || "" : fullSlug;
-      const baseSlug = folderMode ? `${targetSlug}/_index` : targetSlug;
-      let url = ROUTES.draft(encodeURIComponent(baseSlug));
-      if (renameTo) {
-        const params = new URLSearchParams();
-        params.set("rename_to", renameTo);
-        url += `?${params.toString()}`;
-      }
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: fullContent,
-      });
-      if (res.ok) {
-        let finalSlug = fullSlug || (isEdit ? slug || "" : saveSlug);
-        try {
-          const data = await res.json().catch(() => null);
-          if (data && data.slug) finalSlug = data.slug;
-        } catch (e) {
-          console.warn("[Editor] parse draft save response", e);
-        }
-        lastSavedContentRef.current = fullContent;
-        const keyToClear = restoredDraftKeyRef.current || draftKey;
-        safeRemoveLocalStorageKey(keyToClear, "saved draft key");
-        if (
-          restoredDraftKeyRef.current &&
-          restoredDraftKeyRef.current !== draftKey
-        ) {
-          safeRemoveLocalStorageKey(draftKey, "old draft key");
-        }
-        restoredDraftKeyRef.current = null;
-        setStagedDraft(null);
-        setDraftRestored(false);
-        onSaved &&
-          onSaved({ slug: finalSlug, status: "draft", isNew: !isEdit });
-        return;
-      }
-      if (res.status === 409) {
-        setOverwriteMessage("That URL already exists. Overwrite it?");
-        setOverwriteTarget(renameTo || null);
-        setOverwritePrompt(true);
-        setErr(null);
-        setSlugError(null);
-        setShowRenameConfirm(false);
-        return;
-      }
-      const txt = await res.text().catch(() => "");
-      setErr(txt || "Save failed: " + res.status);
-    } catch (e) {
-      setErr("Save failed: network error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  }, [draftKey, endpointPrefix, folderMode, formatOverwriteMessage, frontMatter, fullContent, fullSlug, isEdit, metaStatus, metadataReady, onSaved, performDraftSave, safeRemoveLocalStorageKey, saveSlug, slug]);
   useEffect(() => {
     if (!pendingOverwriteSave) return;
     const target = pendingOverwriteSave.target || null;
     setPendingOverwriteSave(null);
     performSave(target, true);
   }, [pendingOverwriteSave, performSave]);
-
-  async function save() {
-    await performSave();
-  }
-
-  try {
-    saveRef.current = () => save();
-  } catch (e) {
-    console.warn("[Editor] register save ref", e);
-  }
-
+  useEffect(() => {
+    saveRef.current = () => {
+      void performSave();
+    };
+    return () => {
+      saveRef.current = null;
+    };
+  }, [performSave]);
   useEffect(() => {
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = setTimeout(() => {
@@ -1105,34 +1050,22 @@ export default function Editor({
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     };
   }, [fullContent, draftKey, initial]);
-
-  const hasSlugSeed = Boolean(
-    (slugInput || "").trim() || (titleText || "").trim()
-  );
+  const hasSlugSeed = Boolean((slugInput || "").trim() || (titleText || "").trim());
   const shouldAutoSaveDraft = fullContent.trim() !== "";
-  const ensureDraftSlug = useCallback(
-    (ownerValue) => {
-      if (draftSlugRef.current) return draftSlugRef.current;
-      const ownerSlug = slugify(ownerValue || "user");
-      const token = `${Date.now().toString(36)}${Math.random()
-        .toString(36)
-        .slice(2, 8)}`;
-      const next = `drafts/${ownerSlug}/${token}`;
-      draftSlugRef.current = next;
-      return next;
-    },
-    []
-  );
+  const ensureDraftSlug = useCallback(ownerValue => {
+    if (draftSlugRef.current) return draftSlugRef.current;
+    const ownerSlug = slugify(ownerValue || "user");
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const next = `drafts/${ownerSlug}/${token}`;
+    draftSlugRef.current = next;
+    return next;
+  }, []);
   const saveDraftNow = useCallback(async () => {
     if (!shouldAutoSaveDraft) return;
     if (fullContent === lastDraftSavedRef.current) return;
     if (fullContent === (initial || "")) return;
     const ownerValue = (metaCreatedBy || currentUser?.username || "").trim();
-    let targetSlug = isEdit
-      ? fullSlug
-      : hasSlugSeed
-      ? fullSlug
-      : ensureDraftSlug(ownerValue);
+    let targetSlug = isEdit ? fullSlug : hasSlugSeed ? fullSlug : ensureDraftSlug(ownerValue);
     let renameTo = "";
     if (!isEdit && hasSlugSeed && draftSlugRef.current && draftSlugRef.current !== fullSlug) {
       renameTo = folderMode ? `${fullSlug}/_index` : fullSlug;
@@ -1146,8 +1079,10 @@ export default function Editor({
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: fullContent,
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8"
+        },
+        body: fullContent
       });
       if (res.ok) {
         let nextSlug = renameTo || targetSlug;
@@ -1160,30 +1095,19 @@ export default function Editor({
         draftSlugRef.current = nextSlug;
         lastDraftSavedRef.current = fullContent;
         if (onDraftAutoSaved) {
-          onDraftAutoSaved({ slug: nextSlug, status: "draft" });
+          onDraftAutoSaved({
+            slug: nextSlug,
+            status: "draft"
+          });
         }
       }
     } catch (e) {
       console.warn("[Editor] draft autosave failed", e);
     }
-  }, [
-    shouldAutoSaveDraft,
-    fullContent,
-    initial,
-    hasSlugSeed,
-    fullSlug,
-    isEdit,
-    metaCreatedBy,
-    currentUser?.username,
-    folderMode,
-    ensureDraftSlug,
-    onDraftAutoSaved,
-  ]);
-
+  }, [shouldAutoSaveDraft, fullContent, initial, hasSlugSeed, fullSlug, isEdit, metaCreatedBy, currentUser?.username, folderMode, ensureDraftSlug, onDraftAutoSaved]);
   useEffect(() => {
     lastDraftSavedRef.current = null;
   }, [fullSlug]);
-
   useEffect(() => {
     if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     if (!shouldAutoSaveDraft) return;
@@ -1194,18 +1118,17 @@ export default function Editor({
       if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     };
   }, [saveDraftNow, shouldAutoSaveDraft, fullContent]);
-
   const restoreDraft = () => {
     if (!stagedDraft) return;
-    restoredDraftKeyRef.current = draftKey;
+    restoredDraftKeyRef.current = stagedDraftKeyRef.current || draftKey;
     const parsed = parseContent(stagedDraft, titleText || slug || "");
     setTitleText(parsed.title || titleText);
     setBodyText(parsed.body || "");
     setStagedDraft(null);
+    stagedDraftKeyRef.current = null;
     setDraftRestored(true);
   };
-
-  const handleTitleChange = (value) => {
+  const handleTitleChange = value => {
     setTitleText(value);
     const trimmed = String(value || "").trim();
     if (trimmed === "") {
@@ -1221,7 +1144,6 @@ export default function Editor({
       setSlugInput(newDerived);
     }
   };
-
   const handleRegenerateSlug = () => {
     const next = slugify(titleText || "");
     setSlugInput(next);
@@ -1229,124 +1151,90 @@ export default function Editor({
     setSlugEditMode(true);
     autoSlugFromTitleRef.current = false;
   };
-
   const discardDraft = () => {
-    safeRemoveLocalStorageKey(draftKey, "discard draft");
+    safeRemoveLocalStorageKey(stagedDraftKeyRef.current || draftKey, "discard draft");
+    stagedDraftKeyRef.current = null;
     setStagedDraft(null);
     setShowDraftModal(false);
   };
-
   const overwriteActionLabel = "Yes, overwrite";
-
-  return (
-    <div
-      className={`editor editor-modern ${isDualPane ? "editor-dual-pane" : ""}`}
-    >
+  return <div className={`editor editor-modern ${isDualPane ? "editor-dual-pane" : ""}`}>
       <div className="editor-header-actions">
         <div className="editor-header-actions-left">
-          <button
-            className="btn btn-ghost"
-            onClick={() => {
-              saveDraftNow();
-              safeRemoveLocalStorageKey(draftKey, "back button");
-              onCancel && onCancel();
-            }}
-            title="Back"
-          >
+          <button className="btn btn-ghost" onClick={() => {
+          saveDraftNow();
+          safeRemoveLocalStorageKey(draftKey, "back button");
+          onCancel && onCancel();
+        }} title="Back">
             <span className="editor-action-icon">
               <IconBack size={14} />
             </span>
           </button>
         </div>
         <div className="editor-header-actions-right">
-          <div
-            className={`editor-presence ${
-              presenceInfo.alert ? "editor-presence-alert" : ""
-            } ${presenceUnavailable ? "editor-presence-muted" : ""}`}
-            title={presenceInfo.title}
-          >
+          <div className={`editor-presence ${presenceInfo.alert ? "editor-presence-alert" : ""} ${presenceUnavailable ? "editor-presence-muted" : ""}`} title={presenceInfo.title}>
             <span className="editor-presence-dot" />
             <span>{presenceInfo.label}</span>
           </div>
-          {stagedDraft && (
-            <button
-              className="btn btn-secondary btn-sm editor-topbar-action"
-              onClick={() => setShowDraftModal(true)}
-            >
+          {stagedDraft && <button className="btn btn-secondary btn-sm editor-topbar-action" onClick={() => setShowDraftModal(true)}>
               <span className="editor-action-icon">
                 <IconDraft size={14} />
               </span>
               <span>Draft available</span>
-            </button>
-          )}
-          {draftRestored && !stagedDraft && (
-            <span className="chip chip-outline editor-topbar-chip">
+            </button>}
+          {draftRestored && !stagedDraft && <span className="chip chip-outline editor-topbar-chip">
               Draft restored
-            </span>
-          )}
-          {uploading && (
-            <button
-              className="btn btn-ghost btn-sm editor-topbar-action"
-              onClick={() => {
-                safeAbortUpload();
-                setUploading(false);
-                setUploadProgress(0);
-                uploadXhrRef.current = null;
-              }}
-            >
+            </span>}
+          {uploading && <button className="btn btn-ghost btn-sm editor-topbar-action" onClick={() => {
+          safeAbortUpload();
+          setUploading(false);
+          setUploadProgress(0);
+          uploadXhrRef.current = null;
+        }}>
               <span className="editor-action-icon">
                 <IconCloudUpload size={14} />
               </span>
               <span>Uploading {uploadProgress}%</span>
-            </button>
-          )}
-          <button
-            className="btn btn-primary btn-sm editor-topbar-action"
-            onClick={async () => {
-              if (metaStatus === "draft") {
-                if (isEdit) {
-                  const targetSlug = normalizedEditSlug;
-                  if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
-                    setRenameTarget(targetSlug);
-                    setShowRenameConfirm(true);
-                    return;
-                  }
-                }
-                await save();
+            </button>}
+          <button className="btn btn-primary btn-sm editor-topbar-action" onClick={async () => {
+          if (metaStatus === "draft") {
+            if (isEdit) {
+              const targetSlug = normalizedEditSlug;
+              if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
+                setRenameTarget(targetSlug);
+                setShowRenameConfirm(true);
                 return;
               }
-              if (isEdit) {
-                const targetSlug = normalizedEditSlug;
-                if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
-                  const conflict = await checkSlugConflict(targetSlug);
-                  if (conflict.exists && conflict.conflict) {
-                    setOverwriteMessage(
-                      formatOverwriteMessage(targetSlug, conflict.status)
-                    );
-                    setOverwriteTarget(targetSlug);
-                    setOverwritePrompt(true);
-                    return;
-                  }
-                  setRenameTarget(targetSlug);
-                  setShowRenameConfirm(true);
-                  return;
-                }
-                await save();
-                return;
-              }
-              const conflict = await checkSlugConflict(fullSlug);
+            }
+            await performSave();
+            return;
+          }
+          if (isEdit) {
+            const targetSlug = normalizedEditSlug;
+            if (targetSlug && targetSlug !== cleanSlug(slug || "")) {
+              const conflict = await checkSlugConflict(targetSlug);
               if (conflict.exists && conflict.conflict) {
-                setOverwriteMessage(
-                  formatOverwriteMessage(fullSlug, conflict.status)
-                );
-                setOverwriteTarget(null);
+                setOverwriteMessage(formatOverwriteMessage(targetSlug));
+                setOverwriteTarget(targetSlug);
                 setOverwritePrompt(true);
                 return;
               }
-              await save();
-            }}
-            disabled={saving || !metadataReady}
-          >
+              setRenameTarget(targetSlug);
+              setShowRenameConfirm(true);
+              return;
+            }
+            await performSave();
+            return;
+          }
+          const conflict = await checkSlugConflict(fullSlug);
+          if (conflict.exists && conflict.conflict) {
+            setOverwriteMessage(formatOverwriteMessage(fullSlug));
+            setOverwriteTarget(null);
+            setOverwritePrompt(true);
+            return;
+          }
+          await performSave();
+        }} disabled={saving || !metadataReady}>
             <span>Save</span>
           </button>
         </div>
@@ -1354,49 +1242,26 @@ export default function Editor({
       <div className="editor-topbar">
         <div className="editor-topbar-header">
           <label className="field editor-type-field">
-            <select
-              className="input"
-              value={folderMode ? "folder" : "file"}
-              onChange={(e) => setFolderMode(e.target.value === "folder")}
-            >
+            <select className="input" value={folderMode ? "folder" : "file"} onChange={e => setFolderMode(e.target.value === "folder")}>
               <option value="file">File</option>
               <option value="folder">Folder</option>
             </select>
           </label>
           <div className="editor-topbar-meta">
-            {!isEdit && parentOptions && parentOptions.length ? (
-              <label className="field editor-location-field">
+            {!isEdit && parentOptions && parentOptions.length ? <label className="field editor-location-field">
                 <span>Location</span>
-                <select
-                  className="input"
-                  value={parentSlug}
-                  onChange={(e) =>
-                    onParentSlugChange && onParentSlugChange(e.target.value)
-                  }
-                >
-                  {parentOptions.map((opt) => (
-                    <option
-                      key={opt.slug || "__root__"}
-                      value={opt.slug || ""}
-                    >
+                <select className="input" value={parentSlug} onChange={e => onParentSlugChange && onParentSlugChange(e.target.value)}>
+                  {parentOptions.map(opt => <option key={opt.slug || "__root__"} value={opt.slug || ""}>
                       {opt.label || opt.slug || "Root"}
-                    </option>
-                  ))}
+                    </option>)}
                 </select>
-              </label>
-            ) : null}
+              </label> : null}
             <label className="field editor-status-field">
               <span>Status</span>
-              <select
-                className="input"
-                value={metaStatus}
-                onChange={(e) => setMetaStatus(e.target.value)}
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
+              <select className="input" value={metaStatus} onChange={e => setMetaStatus(e.target.value)}>
+                {STATUS_OPTIONS.map(opt => <option key={opt} value={opt}>
                     {opt[0].toUpperCase() + opt.slice(1)}
-                  </option>
-                ))}
+                  </option>)}
               </select>
             </label>
           </div>
@@ -1404,41 +1269,23 @@ export default function Editor({
         <div className="editor-topbar-main">
           <label className="field editor-title-field">
             <span>Title</span>
-            <input
-              className="input editor-title-input editor-title-input-hero"
-              ref={titleInputRef}
-              value={titleText}
-              onFocus={() => {
-                autoSlugFromTitleRef.current =
-                  String(titleText || "").trim() === "";
-              }}
-              onBlur={() => {
-                autoSlugFromTitleRef.current = false;
-              }}
-              onChange={(e) => handleTitleChange(e.target.value)}
-            />
+            <input className="input editor-title-input editor-title-input-hero" ref={titleInputRef} value={titleText} onFocus={() => {
+            autoSlugFromTitleRef.current = String(titleText || "").trim() === "";
+          }} onBlur={() => {
+            autoSlugFromTitleRef.current = false;
+          }} onChange={e => handleTitleChange(e.target.value)} />
           </label>
           <label className="field editor-slug-field">
             <span>URL</span>
             <div className="editor-slug-input">
               <span className="editor-slug-prefix">{urlPrefix}</span>
-              <input
-                className="input"
-                value={slugInput}
-                onChange={(e) => {
-                  setSlugInput(e.target.value);
-                  setSlugError(null);
-                  setSlugEditMode(true);
-                  autoSlugFromTitleRef.current = false;
-                }}
-              />
-              <button
-                className="btn btn-ghost btn-sm editor-slug-button"
-                type="button"
-                onClick={handleRegenerateSlug}
-                title="Regenerate from title"
-                aria-label="Regenerate URL from title"
-              >
+              <input className="input" value={slugInput} onChange={e => {
+              setSlugInput(e.target.value);
+              setSlugError(null);
+              setSlugEditMode(true);
+              autoSlugFromTitleRef.current = false;
+            }} />
+              <button className="btn btn-ghost btn-sm editor-slug-button" type="button" onClick={handleRegenerateSlug} title="Regenerate from title" aria-label="Regenerate URL from title">
                 <span className="editor-action-icon">
                   <IconRefresh size={14} />
                 </span>
@@ -1448,227 +1295,101 @@ export default function Editor({
         </div>
       </div>
 
-      <div
-        className={`editor-surface ${
-          showPreview ? "editor-surface-split" : ""
-        }`}
-      >
+      <div className={`editor-surface ${showPreview ? "editor-surface-split" : ""}`}>
         <div className="editor-toolbar-row">
           <div className="editor-toolbar-shell">
             <div className="editor-toolbar-controls">
-              <button
-                className="btn btn-ghost btn-sm"
-                type="button"
-                onClick={() => setShowPreview((p) => !p)}
-                title={showPreview ? "Hide preview" : "Show preview"}
-                aria-label={showPreview ? "Hide preview" : "Show preview"}
-              >
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowPreview(p => !p)} title={showPreview ? "Hide preview" : "Show preview"} aria-label={showPreview ? "Hide preview" : "Show preview"}>
                 <span className="editor-action-icon">
-                  {showPreview ? (
-                    <IconEye size={14} />
-                  ) : (
-                    <IconEyeSlash size={14} />
-                  )}
+                  {showPreview ? <IconEye size={14} /> : <IconEyeSlash size={14} />}
                 </span>
               </button>
-              {!isDualPane && onEnterDualPane && (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  type="button"
-                  onClick={() =>
-                    onEnterDualPane && onEnterDualPane(fullContent)
-                  }
-                  title="Dual pane"
-                  aria-label="Dual pane"
-                >
+              {!isDualPane && onEnterDualPane && <button className="btn btn-secondary btn-sm" type="button" onClick={() => onEnterDualPane && onEnterDualPane(fullContent)} title="Dual pane" aria-label="Dual pane">
                   <span className="editor-action-icon">
                     <IconSplit size={14} />
                   </span>
-                </button>
-              )}
-              {isDualPane && onExitDualPane && (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  type="button"
-                  onClick={() => onExitDualPane && onExitDualPane(fullContent)}
-                  title="Exit dual pane"
-                  aria-label="Exit dual pane"
-                >
+                </button>}
+              {isDualPane && onExitDualPane && <button className="btn btn-secondary btn-sm" type="button" onClick={() => onExitDualPane && onExitDualPane(fullContent)} title="Exit dual pane" aria-label="Exit dual pane">
                   <span className="editor-action-icon">
                     <IconSplit size={14} />
                   </span>
-                </button>
-              )}
+                </button>}
             </div>
 
             <div className="editor-toolbar">
               <div className="row">
                 <div className="toolbar-group">
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => wrapSelection("**", "**")}
-                    title="Bold"
-                    aria-label="Bold"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => wrapSelection("**", "**")} title="Bold" aria-label="Bold">
                     <span className="btn-emoji">B</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => wrapSelection("*", "*")}
-                    title="Italic"
-                    aria-label="Italic"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => wrapSelection("*", "*")} title="Italic" aria-label="Italic">
                     <span className="btn-emoji">I</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => wrapSelection("<u>", "</u>")}
-                    title="Underline"
-                    aria-label="Underline"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => wrapSelection("<u>", "</u>")} title="Underline" aria-label="Underline">
                     <span className="btn-emoji">U</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => wrapSelection("~~", "~~")}
-                    title="Strikethrough"
-                    aria-label="Strikethrough"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => wrapSelection("~~", "~~")} title="Strikethrough" aria-label="Strikethrough">
                     <span className="btn-emoji">S</span>
                   </button>
                 </div>
 
                 <div className="toolbar-group">
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => insertSnippet("# ")}
-                    title="Heading H1"
-                    aria-label="Heading H1"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => insertSnippet("# ")} title="Heading H1" aria-label="Heading H1">
                     <span className="btn-emoji">H1</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => insertSnippet("## ")}
-                    title="Heading H2"
-                    aria-label="Heading H2"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => insertSnippet("## ")} title="Heading H2" aria-label="Heading H2">
                     <span className="btn-emoji">H2</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => insertSnippet("### ")}
-                    title="Heading H3"
-                    aria-label="Heading H3"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => insertSnippet("### ")} title="Heading H3" aria-label="Heading H3">
                     <span className="btn-emoji">H3</span>
                   </button>
                 </div>
 
                 <div className="toolbar-group">
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => {
-                      const v = viewRef.current;
-                      if (v) toggleBulletList(v);
-                      else insertSnippet("- ");
-                    }}
-                    title="Toggle bullet list"
-                    aria-label="Toggle bullet list"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => {
+                  const v = viewRef.current;
+                  if (v) toggleBulletList(v);else insertSnippet("- ");
+                }} title="Toggle bullet list" aria-label="Toggle bullet list">
                     <span className="btn-emoji">*</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => {
-                      const v = viewRef.current;
-                      if (v) toggleNumberedList(v);
-                      else insertSnippet("1. ");
-                    }}
-                    title="Toggle numbered list"
-                    aria-label="Toggle numbered list"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => {
+                  const v = viewRef.current;
+                  if (v) toggleNumberedList(v);else insertSnippet("1. ");
+                }} title="Toggle numbered list" aria-label="Toggle numbered list">
                     <span className="btn-emoji">1.</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => {
-                      const v = viewRef.current;
-                      if (v) indentLines(v);
-                      else insertSnippet("  ");
-                    }}
-                    title="Indent"
-                    aria-label="Indent"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => {
+                  const v = viewRef.current;
+                  if (v) indentLines(v);else insertSnippet("  ");
+                }} title="Indent" aria-label="Indent">
                     <span className="btn-emoji">&gt;&gt;</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => {
-                      const v = viewRef.current;
-                      if (v) outdentLines(v);
-                    }}
-                    title="Outdent"
-                    aria-label="Outdent"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => {
+                  const v = viewRef.current;
+                  if (v) outdentLines(v);
+                }} title="Outdent" aria-label="Outdent">
                     <span className="btn-emoji">&lt;&lt;</span>
                   </button>
                 </div>
 
                 <div className="toolbar-group">
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => {
-                      const v = viewRef.current;
-                      if (v) toggleBlockquote(v);
-                      else insertSnippet("> ");
-                    }}
-                    title="Blockquote"
-                    aria-label="Blockquote"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => {
+                  const v = viewRef.current;
+                  if (v) toggleBlockquote(v);else insertSnippet("> ");
+                }} title="Blockquote" aria-label="Blockquote">
                     <span className="btn-emoji">&gt;</span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={() => insertSnippet("\n```\ncode\n```\n")}
-                    title="Code block"
-                    aria-label="Code block"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => insertSnippet("\n```\ncode\n```\n")} title="Code block" aria-label="Code block">
                     <span className="btn-emoji">
                       <IconCode size={14} />
                     </span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={insertTable}
-                    title="Insert table"
-                    aria-label="Insert table"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={insertTable} title="Insert table" aria-label="Insert table">
                     <span className="btn-emoji">
                       <IconTable size={14} />
                     </span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={insertHorizontalRule}
-                    title="Insert horizontal rule"
-                    aria-label="Insert horizontal rule"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={insertHorizontalRule} title="Insert horizontal rule" aria-label="Insert horizontal rule">
                     <span className="btn-emoji">
                       <IconHr size={14} />
                     </span>
@@ -1676,53 +1397,25 @@ export default function Editor({
                 </div>
 
                 <div className="toolbar-group">
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={promptAndInsertLink}
-                    title="Insert link"
-                    aria-label="Insert link"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={promptAndInsertLink} title="Insert link" aria-label="Insert link">
                     <span className="btn-emoji">
                       <IconLink size={14} />
                     </span>
                   </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    type="button"
-                    onClick={promptAndInsertImage}
-                    title="Insert image"
-                    aria-label="Insert image"
-                  >
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={promptAndInsertImage} title="Insert image" aria-label="Insert image">
                     <span className="btn-emoji">
                       <IconImage size={14} />
                     </span>
                   </button>
                   <div className="wiki-mode-toggle">
-                    <button
-                      type="button"
-                      className={documentInsertMode === "link" ? "active" : ""}
-                      aria-pressed={documentInsertMode === "link"}
-                      onClick={() => setDocumentInsertMode("link")}
-                    >
+                    <button type="button" className={documentInsertMode === "link" ? "active" : ""} aria-pressed={documentInsertMode === "link"} onClick={() => setDocumentInsertMode("link")}>
                       Link
                     </button>
-                    <button
-                      type="button"
-                      className={documentInsertMode === "embed" ? "active" : ""}
-                      aria-pressed={documentInsertMode === "embed"}
-                      onClick={() => setDocumentInsertMode("embed")}
-                    >
+                    <button type="button" className={documentInsertMode === "embed" ? "active" : ""} aria-pressed={documentInsertMode === "embed"} onClick={() => setDocumentInsertMode("embed")}>
                       Embed
                     </button>
                   </div>
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    type="button"
-                    onClick={() => setShowDocumentSearch((s) => !s)}
-                    title="Insert wiki link"
-                    aria-label="Insert wiki link"
-                  >
+                  <button className="btn btn-sm btn-secondary" type="button" onClick={() => setShowDocumentSearch(s => !s)} title="Insert wiki link" aria-label="Insert wiki link">
                     [[ ]]
                   </button>
                 </div>
@@ -1733,143 +1426,87 @@ export default function Editor({
         <div className="editor-pane editor-pane-body">
           <div className="editor-body">
             {!isDualPane && <div className="content-eyebrow">Body</div>}
-            {CM ? (
-              <CM
-                value={isDualPane ? dualPaneValue : bodyText}
-                height="100%"
-                extensions={extensionsWithKeys}
-                basicSetup={{ lineNumbers: false }}
-                onUpdate={(update) => {
-                  updateViewRef(update);
-                }}
-                onChange={(v) => {
-                  if (isDualPane) {
-                    const parsed = parseDualPaneContent(v);
-                    setTitleText(parsed.title);
-                    setBodyText(parsed.body);
-                    return;
-                  }
-                  setBodyText(v);
-                }}
-                theme="dark"
-              />
-            ) : (
-              <textarea
-                className="codemirror-fallback"
-                value={isDualPane ? dualPaneValue : bodyText}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (isDualPane) {
-                    const parsed = parseDualPaneContent(v);
-                    setTitleText(parsed.title);
-                    setBodyText(parsed.body);
-                    return;
-                  }
-                  setBodyText(v);
-                }}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  boxSizing: "border-box",
-                  fontFamily: "monospace",
-                  padding: 12,
-                }}
-              />
-            )}
-            {showDocumentSearch && (
-              <DocumentSearch
-                documentQuery={documentQuery}
-                onQueryChange={setDocumentQuery}
-                filteredLinks={filteredLinks}
-                onInsert={(slugValue, embed) =>
-                  insertDocument(slugValue, embed)
-                }
-                documentInsertMode={documentInsertMode}
-                onClose={() => setShowDocumentSearch(false)}
-              />
-            )}
+            {CM ? <CM value={isDualPane ? dualPaneValue : bodyText} height="100%" extensions={extensionsWithKeys} basicSetup={{
+            lineNumbers: false
+          }} onUpdate={update => {
+            updateViewRef(update);
+          }} onChange={v => {
+            if (isDualPane) {
+              const parsed = parseDualPaneContent(v);
+              setTitleText(parsed.title);
+              setBodyText(parsed.body);
+              return;
+            }
+            setBodyText(v);
+          }} theme="dark" /> : <textarea className="codemirror-fallback" value={isDualPane ? dualPaneValue : bodyText} onChange={e => {
+            const v = e.target.value;
+            if (isDualPane) {
+              const parsed = parseDualPaneContent(v);
+              setTitleText(parsed.title);
+              setBodyText(parsed.body);
+              return;
+            }
+            setBodyText(v);
+          }} style={{
+            width: "100%",
+            height: "100%",
+            boxSizing: "border-box",
+            fontFamily: "monospace",
+            padding: 12
+          }} />}
+            {showDocumentSearch && <DocumentSearch documentQuery={documentQuery} onQueryChange={setDocumentQuery} filteredLinks={filteredLinks} onInsert={(slugValue, embed) => insertDocument(slugValue, embed)} documentInsertMode={documentInsertMode} onClose={() => setShowDocumentSearch(false)} />}
           </div>
         </div>
 
-        {showPreview && (
-          <div className="editor-pane editor-preview">
+        {showPreview && <div className="editor-pane editor-preview">
             {!isDualPane && <div className="content-eyebrow">Live preview</div>}
             <div className="md-view md-prose">
-              {fullContent ? (
-                <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
-              ) : null}
+              {fullContent ? <div dangerouslySetInnerHTML={{
+            __html: previewHtml
+          }} /> : null}
             </div>
-          </div>
-        )}
+          </div>}
       </div>
 
-      {err && (
-        <div className="banner banner-danger" style={{ marginTop: 10 }}>
+      {err && <div className="banner banner-danger" style={{
+      marginTop: 10
+    }}>
           <div className="banner-body">{err}</div>
-        </div>
-      )}
+        </div>}
 
-      {overwritePrompt && (
-        <ModalShell
-          title="Overwrite existing page?"
-          onClose={closeOverwritePrompt}
-          maxWidth={520}
-          footer={
-            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <button
-                className="btn btn-danger"
-                onClick={confirmOverwrite}
-                disabled={saving}
-              >
+      {overwritePrompt && <ModalShell title="Overwrite existing page?" onClose={closeOverwritePrompt} maxWidth={520} footer={<div className="row" style={{
+      justifyContent: "flex-end",
+      gap: 8
+    }}>
+              <button className="btn btn-danger" onClick={confirmOverwrite} disabled={saving}>
                 {overwriteActionLabel}
               </button>
-              <button
-                className="btn btn-ghost"
-                onClick={closeOverwritePrompt}
-                disabled={saving}
-              >
+              <button className="btn btn-ghost" onClick={closeOverwritePrompt} disabled={saving}>
                 No, go back
               </button>
-            </div>
-          }
-        >
+            </div>}>
           <div className="stack">
             <div className="muted">
-              {overwriteMessage ||
-                "A page with this slug already exists. Overwrite it, or change the title to pick a new slug."}
+              {overwriteMessage || "A page with this slug already exists. Overwrite it, or change the title to pick a new slug."}
             </div>
           </div>
-        </ModalShell>
-      )}
+        </ModalShell>}
 
-      {showRenameConfirm && (
-        <ModalShell
-          title="Change page URL?"
-          onClose={() => setShowRenameConfirm(false)}
-          maxWidth={520}
-          footer={
-            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <button
-                className="btn btn-danger"
-                onClick={async () => {
-                  setShowRenameConfirm(false);
-                  setSlugEditMode(false);
-                  await performSave(renameTarget);
-                }}
-                disabled={saving}
-              >
+      {showRenameConfirm && <ModalShell title="Change page URL?" onClose={() => setShowRenameConfirm(false)} maxWidth={520} footer={<div className="row" style={{
+      justifyContent: "flex-end",
+      gap: 8
+    }}>
+              <button className="btn btn-danger" onClick={async () => {
+        setShowRenameConfirm(false);
+        setSlugEditMode(false);
+        await performSave(renameTarget);
+      }} disabled={saving}>
                 Change URL
               </button>
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowRenameConfirm(false)}
-                disabled={saving}
-              >
+              <button className="btn btn-ghost" onClick={() => setShowRenameConfirm(false)} disabled={saving}>
                 Cancel
               </button>
-            </div>
-          }
-        >
+            </div>}>
           <div className="stack">
             <div className="muted">
               You&apos;re changing this page&apos;s URL from {slugToPath(slug)} to{" "}
@@ -1877,36 +1514,25 @@ export default function Editor({
               stop working.
             </div>
           </div>
-        </ModalShell>
-      )}
+        </ModalShell>}
 
-      {showDraftModal && (
-        <ModalShell
-          title="Draft available"
-          onClose={() => setShowDraftModal(false)}
-          maxWidth={460}
-          footer={
-            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <button
-                className="btn"
-                onClick={() => {
-                  restoreDraft();
-                  setShowDraftModal(false);
-                }}
-              >
+      {showDraftModal && <ModalShell title="Draft available" onClose={() => setShowDraftModal(false)} maxWidth={460} footer={<div className="row" style={{
+      justifyContent: "flex-end",
+      gap: 8
+    }}>
+              <button className="btn" onClick={() => {
+        restoreDraft();
+        setShowDraftModal(false);
+      }}>
                 Restore draft
               </button>
               <button className="btn btn-ghost" onClick={discardDraft}>
                 Discard draft
               </button>
-            </div>
-          }
-        >
+            </div>}>
           <div className="stack">
             <div className="muted">Restore the saved draft or discard it.</div>
           </div>
-        </ModalShell>
-      )}
-    </div>
-  );
+        </ModalShell>}
+    </div>;
 }

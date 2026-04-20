@@ -1,13 +1,11 @@
 import React from "react";
-
 export default function DocumentPreviewHeader({
   selectedDoc,
   onShowAbout,
   onEdit,
-  onOpenReader,
+  onOpenReader
 }) {
-  return (
-    <div className="doc-preview-header">
+  return <div className="doc-preview-header">
       <div>
         <h2 className="doc-preview-title">
           {selectedDoc?.title || selectedDoc?.slug}
@@ -24,6 +22,5 @@ export default function DocumentPreviewHeader({
           Edit
         </button>
       </div>
-    </div>
-  );
+    </div>;
 }

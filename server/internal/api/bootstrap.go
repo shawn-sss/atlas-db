@@ -4,14 +4,85 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 
+	"atlas/internal/auth"
 	"atlas/internal/dbutil"
+	"atlas/internal/documents"
 	"atlas/internal/httpx"
 	"atlas/internal/random"
 
 	"github.com/go-chi/chi/v5"
 )
+
+type seededAccount struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
+var defaultSeededAccounts = []seededAccount{
+	{Username: "owner", Password: "owner", Role: "Owner"},
+	{Username: "admin", Password: "admin", Role: "Admin"},
+	{Username: "user", Password: "user", Role: "User"},
+}
+
+func bootstrapSeededAccounts() []seededAccount {
+	accounts := make([]seededAccount, len(defaultSeededAccounts))
+	copy(accounts, defaultSeededAccounts)
+	return accounts
+}
+
+func hasOnlySeededAccounts(db *sql.DB) (bool, error) {
+	rows, err := db.Query(`SELECT username FROM users`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	usernames := make([]string, 0, len(defaultSeededAccounts))
+	for rows.Next() {
+		var username string
+		if err := rows.Scan(&username); err != nil {
+			return false, err
+		}
+		usernames = append(usernames, strings.ToLower(strings.TrimSpace(username)))
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(usernames) != len(defaultSeededAccounts) {
+		return false, nil
+	}
+
+	expected := make([]string, len(defaultSeededAccounts))
+	for i, account := range defaultSeededAccounts {
+		expected[i] = strings.ToLower(strings.TrimSpace(account.Username))
+	}
+	sort.Strings(usernames)
+	sort.Strings(expected)
+	for i := range expected {
+		if usernames[i] != expected[i] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func seedDefaultUsers(exec sqlExecer) error {
+	for _, account := range defaultSeededAccounts {
+		if _, err := createUserRecord(
+			exec,
+			account.Username,
+			account.Password,
+			account.Role,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 
@@ -41,18 +112,31 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 		if err != nil {
 			appIcon = sql.NullString{}
 		}
+		seededAccountsOnly := false
+		if usersCount == len(defaultSeededAccounts) {
+			seededAccountsOnly, err = hasOnlySeededAccounts(db)
+			if err != nil {
+				httpErr(w, http.StatusInternalServerError, "users lookup failed")
+				return
+			}
+		}
 		fresh := usersCount == 0 && startPageSlug.String == ""
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"fresh":         fresh,
-			"bootId":        bootID,
-			"startPageSlug": startPageSlug.String,
-			"timezone":      timezone.String,
-			"appTitle":      appTitle.String,
-			"appIcon":       appIcon.String,
+			"fresh":              fresh,
+			"bootId":             bootID,
+			"startPageSlug":      startPageSlug.String,
+			"timezone":           timezone.String,
+			"appTitle":           appTitle.String,
+			"appIcon":            appIcon.String,
+			"seededAccounts":     bootstrapSeededAccounts(),
+			"seededAccountsOnly": seededAccountsOnly,
 		})
 	})
 
 	r.Put("/bootstrap/timezone", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeBootstrapMutation(w, r, db) {
+			return
+		}
 		var req struct{ Timezone string }
 		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
@@ -75,6 +159,9 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 	})
 
 	r.Put("/bootstrap/app-title", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeBootstrapMutation(w, r, db) {
+			return
+		}
 		var req struct{ AppTitle string }
 		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpErr(w, http.StatusBadRequest, "invalid json")
@@ -110,30 +197,18 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 		}
 		defer tx.Rollback()
 
-		seed := []struct{ Username, Password, Role string }{
-			{"owner", "owner", "Owner"},
-			{"admin", "admin", "Admin"},
-			{"user", "user", "User"},
-		}
-		var ownerID int64
-		for i, s := range seed {
-			res, err := createUserRecord(tx, s.Username, s.Password, s.Role)
-			if err != nil {
-				if isUniqueConstraintError(err) {
-					httpx.WriteError(w, http.StatusConflict, "USERS_EXIST", "Users already exist")
-					return
-				}
-				httpErr(w, http.StatusInternalServerError, "create user failed")
-				return
-			}
-			if i == 0 {
-				ownerID, _ = res.LastInsertId()
-			}
+		var req map[string]any
+		if err := httpx.ReadJSON(r, &req); err != nil {
+			httpErr(w, http.StatusBadRequest, "invalid json")
+			return
 		}
 
-		token, expires, err := createSessionRecord(tx, ownerID)
-		if err != nil {
-			httpErr(w, http.StatusInternalServerError, "session error")
+		if err := seedDefaultUsers(tx); err != nil {
+			if isUniqueConstraintError(err) {
+				httpx.WriteError(w, http.StatusConflict, "USERS_EXIST", "Users already exist")
+				return
+			}
+			httpErr(w, http.StatusInternalServerError, "create users failed")
 			return
 		}
 
@@ -156,11 +231,21 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 			return
 		}
 
-		writeSessionCookie(w, token, expires)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": ownerID, "username": "owner", "role": "Owner"})
+		appTitleValue, _ := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'app_title'`)
+		if err := documents.EnsureInitialWorkspaceContent(db, appTitleValue.String); err != nil {
+			httpErr(w, http.StatusInternalServerError, "seed workspace failed")
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"accounts": bootstrapSeededAccounts(),
+		})
 	})
 
 	r.Post("/bootstrap/app-icon", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeBootstrapMutation(w, r, db) {
+			return
+		}
 		upload, ok := parseMultipartUploadOrRespond(w, r, 10<<20, uploadErrorMessages{
 			invalidFormData: "invalid form data",
 			missingUpload:   "missing file",
@@ -189,10 +274,34 @@ func registerBootstrapRoutes(r chi.Router, db *sql.DB) {
 	})
 
 	r.Delete("/bootstrap/app-icon", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeBootstrapMutation(w, r, db) {
+			return
+		}
 		if _, err := db.Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES('app_icon','')`); err != nil {
 			httpErr(w, http.StatusInternalServerError, "unable to clear icon")
 			return
 		}
 		httpx.WriteJSON(w, http.StatusNoContent, nil)
 	})
+}
+
+func authorizeBootstrapMutation(w http.ResponseWriter, r *http.Request, db *sql.DB) bool {
+	usersCount, err := dbutil.Scalar[int](db, `SELECT COUNT(1) FROM users`)
+	if err != nil {
+		httpErr(w, http.StatusInternalServerError, "users count failed")
+		return false
+	}
+	if usersCount == 0 {
+		return true
+	}
+	u, err := auth.GetUserFromRequest(r, db)
+	if err != nil || u == nil {
+		httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return false
+	}
+	if strings.EqualFold(u.Role, "Admin") || strings.EqualFold(u.Role, "Owner") {
+		return true
+	}
+	httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
+	return false
 }

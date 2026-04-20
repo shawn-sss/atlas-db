@@ -21,26 +21,16 @@ type seedDoc struct {
 }
 
 const defaultSeedMetaKey = "seed_default_content_v1"
+const DefaultStartPageSlug = "start-page"
+const defaultWorkspaceTitle = "Atlas DB"
 
-func seedDefaultStructureIfNeeded(db *sql.DB) []string {
-	setupComplete, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'setup_complete'`)
-	if err != nil || strings.TrimSpace(setupComplete.String) != "1" {
-		return nil
+func ensureSeedDocs(root string, docs []seedDoc) ([]string, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("published root is required")
 	}
-
-	seeded, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey)
-	if err == nil {
-		value := strings.TrimSpace(seeded.String)
-		if value != "" && value != "nuked" {
-			return nil
-		}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
 	}
-
-	root := contentpath.PublishedRoot
-	if root == "" {
-		return nil
-	}
-	_ = os.MkdirAll(root, 0o755)
 
 	writeIfMissing := func(rel string, content string) error {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
@@ -53,7 +43,20 @@ func seedDefaultStructureIfNeeded(db *sql.DB) []string {
 		return os.WriteFile(abs, []byte(content), 0o644)
 	}
 
-	seedDocs := []seedDoc{
+	seededSlugs := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		content := seededDocumentContent(doc.slug, doc.body)
+		if err := writeIfMissing(doc.path, content); err != nil {
+			return seededSlugs, err
+		}
+		seededSlugs = append(seededSlugs, doc.slug)
+	}
+
+	return seededSlugs, nil
+}
+
+func defaultStructureSeedDocs() []seedDoc {
+	return []seedDoc{
 		{
 			path: "software-installs/_index.md",
 			slug: "software-installs",
@@ -85,20 +88,136 @@ func seedDefaultStructureIfNeeded(db *sql.DB) []string {
 			body: importantLinksBody(),
 		},
 	}
+}
 
-	var seededSlugs []string
-	for _, doc := range seedDocs {
-		content := seededDocumentContent(doc.slug, doc.body)
-		if err := writeIfMissing(doc.path, content); err != nil {
-			log.Printf("seed write %s: %v", doc.path, err)
-			continue
+func defaultWorkspaceSeedDocs(appTitle string) []seedDoc {
+	title := strings.TrimSpace(appTitle)
+	if title == "" {
+		title = defaultWorkspaceTitle
+	}
+	docs := []seedDoc{
+		{
+			path: DefaultStartPageSlug + ".md",
+			slug: DefaultStartPageSlug,
+			body: welcomeStartPageBody(title),
+		},
+	}
+	return append(docs, defaultStructureSeedDocs()...)
+}
+
+func EnsureInitialWorkspaceContent(db *sql.DB, appTitle string) error {
+	if db == nil {
+		return fmt.Errorf("db is required")
+	}
+	if err := contentpath.EnsureRuntimeDirs(); err != nil {
+		return fmt.Errorf("ensure runtime dirs: %w", err)
+	}
+
+	seededSlugs, err := ensureSeedDocs(
+		contentpath.PublishedRoot,
+		defaultWorkspaceSeedDocs(appTitle),
+	)
+	if err != nil {
+		return fmt.Errorf("seed workspace docs: %w", err)
+	}
+	if err := SyncContentIndex(db); err != nil {
+		return fmt.Errorf("sync seeded docs: %w", err)
+	}
+	if err := SetStartPageSlug(db, DefaultStartPageSlug); err != nil {
+		return fmt.Errorf("set start page: %w", err)
+	}
+	if len(seededSlugs) > 0 {
+		var placeholders strings.Builder
+		args := make([]any, 0, len(seededSlugs))
+		for i, slug := range seededSlugs {
+			if i > 0 {
+				placeholders.WriteString(",")
+			}
+			placeholders.WriteString("?")
+			args = append(args, slug)
 		}
-		seededSlugs = append(seededSlugs, doc.slug)
+		if _, err := db.Exec(
+			fmt.Sprintf(
+				"UPDATE documents SET is_home = 1 WHERE slug IN (%s)",
+				placeholders.String(),
+			),
+			args...,
+		); err != nil {
+			return fmt.Errorf("set seeded home flags: %w", err)
+		}
+	}
+	if _, err := db.Exec(
+		`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`,
+		defaultSeedMetaKey,
+		fmt.Sprintf("%d", time.Now().Unix()),
+	); err != nil {
+		return fmt.Errorf("mark default seed: %w", err)
+	}
+	return nil
+}
+
+func seedDefaultStructureIfNeeded(db *sql.DB) []string {
+	setupComplete, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = 'setup_complete'`)
+	if err != nil || strings.TrimSpace(setupComplete.String) != "1" {
+		return nil
+	}
+
+	seeded, err := dbutil.ScalarOrZero[sql.NullString](db, `SELECT value FROM meta WHERE key = ?`, defaultSeedMetaKey)
+	if err == nil {
+		value := strings.TrimSpace(seeded.String)
+		if value != "" && value != "nuked" {
+			return nil
+		}
+	}
+
+	root := contentpath.PublishedRoot
+	if root == "" {
+		return nil
+	}
+	seededSlugs, err := ensureSeedDocs(root, defaultStructureSeedDocs())
+	if err != nil {
+		log.Printf("seed default structure: %v", err)
+		return nil
 	}
 
 	_, _ = db.Exec(`INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)`, defaultSeedMetaKey, fmt.Sprintf("%d", time.Now().Unix()))
 
 	return seededSlugs
+}
+
+func welcomeStartPageBody(appTitle string) string {
+	title := strings.TrimSpace(appTitle)
+	if title == "" {
+		title = defaultWorkspaceTitle
+	}
+	return fmt.Sprintf(`# Welcome to %s
+
+%s keeps your knowledge, action items, and onboarding paths in one workspace so teammates can orient themselves quickly.
+
+## What this workspace gives you
+
+- Collections and folders: organize work by team, project, or process so people can browse by intent.
+- Documents: craft how-tos, handoffs, and checklists with a single focus and clear expectations.
+- Metadata and publishing: use owners, tags, and statuses to signal who owns a doc and whether it is ready for teammates.
+- Views and discovery: filtered lists, search, backlinks, and table views help you find the right content fast.
+- Linking and collaboration: share internal links, mention teammates, and follow related work for context.
+- Versioning and history: every change is traced so you can review updates or roll back as needed.
+- Backups and safety: periodic snapshots give you confidence you can restore a document if something goes sideways.
+
+## Getting started (quick)
+
+- Open one of the starter guides below to understand how your team uses %s today.
+- Create a focused page with **New**, pick a descriptive title, then link it to related pages so others can discover the context.
+- Pin the handbook, troubleshooting guide, or another reliable doc as the Start page so teammates land on the best instructions.
+
+## Starter content
+
+- **Important Links** - the hub for dashboards, catalogues, and shared policies you reference before editing downstream docs.
+- **New PC Setup** - describe the machine class, imaging expectations, and who covers each handoff step.
+- **Software Installs** - capture the repeatable installers you run after imaging, with verification guidance for each version.
+
+Keep pages concise, link liberally, and surface metadata (owner/status) so teammates always know what to trust.
+`, title, title, title)
 }
 
 func newPCIndexBody() string {
@@ -126,7 +245,7 @@ func newPCProcessBody() string {
 	b.WriteString("4. **Run the standard installers**\n")
 	b.WriteString("   - Follow the [Software installs](../software-installs) guides and verify each version matches the template.\n")
 	b.WriteString("5. **Configure accounts and finalize**\n")
-	b.WriteString("   - Create admin users, test MFA prompts, and note the handoff summary in the ticket.\n\n")
+	b.WriteString("   - Create admin users, confirm MFA prompts, and note the handoff summary in the ticket.\n\n")
 	b.WriteString("## Verification\n\n")
 	b.WriteString("- Checklist every step in your ticket before closing it.\n")
 	b.WriteString("- Run `system-checker --run-friendly` and attach the summary if anything looks off.\n\n")

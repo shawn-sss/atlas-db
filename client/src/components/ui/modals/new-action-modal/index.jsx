@@ -2,26 +2,14 @@ import React from "react";
 import ModalShell from "..";
 import IconDoc from "../../icons/icon-doc";
 import IconFolder from "../../icons/icon-folder";
-
 export default function NewActionModal({
   onClose,
   onDocument,
-  onFolderSelect,
+  onFolderSelect
 }) {
-  return (
-    <ModalShell
-      eyebrow="Create"
-      title="What would you like to build?"
-      subtitle="Start a document or an empty folder and add content afterward."
-      onClose={onClose}
-      className="modal-new-action"
-    >
+  return <ModalShell eyebrow="Create" title="What would you like to build?" subtitle="Start a document or an empty folder and add content afterward." onClose={onClose} className="modal-new-action">
       <div className="new-action-options">
-        <button
-          type="button"
-          className="new-action-option"
-          onClick={onDocument}
-        >
+        <button type="button" className="new-action-option" onClick={onDocument}>
           <div className="new-action-icon">
             <IconDoc size={30} />
           </div>
@@ -32,11 +20,7 @@ export default function NewActionModal({
             </div>
           </div>
         </button>
-        <button
-          type="button"
-          className="new-action-option"
-          onClick={onFolderSelect}
-        >
+        <button type="button" className="new-action-option" onClick={onFolderSelect}>
           <div className="new-action-icon">
             <IconFolder size={30} />
           </div>
@@ -48,6 +32,5 @@ export default function NewActionModal({
           </div>
         </button>
       </div>
-    </ModalShell>
-  );
+    </ModalShell>;
 }

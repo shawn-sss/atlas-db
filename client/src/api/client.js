@@ -1,4 +1,4 @@
-export class APIError extends Error {
+class APIError extends Error {
   constructor(message, status, code, body) {
     super(message);
     this.name = "APIError";
@@ -7,16 +7,17 @@ export class APIError extends Error {
     this.body = body;
   }
 }
-
-export async function apiFetch(
-  path,
-  { method = "GET", body, headers, signal } = {}
-) {
+export async function apiFetch(path, {
+  method = "GET",
+  body,
+  headers,
+  signal
+} = {}) {
   const initHeaders = new Headers(headers || {});
   const init = {
     method,
     credentials: "same-origin",
-    headers: initHeaders,
+    headers: initHeaders
   };
   if (signal) {
     init.signal = signal;
@@ -33,7 +34,6 @@ export async function apiFetch(
       init.body = body;
     }
   }
-
   const response = await fetch(path, init);
   const text = await response.text();
   let parsed;
@@ -45,18 +45,9 @@ export async function apiFetch(
     }
   }
   if (!response.ok) {
-    const payload =
-      parsed && typeof parsed === "object" && "error" in parsed
-        ? parsed.error
-        : parsed;
-    const message =
-      payload && typeof payload === "object" && payload.message
-        ? payload.message
-        : response.statusText || "Request failed";
-    const code =
-      payload && typeof payload === "object" && payload.code
-        ? payload.code
-        : `HTTP_${response.status}`;
+    const payload = parsed && typeof parsed === "object" && "error" in parsed ? parsed.error : parsed;
+    const message = payload && typeof payload === "object" && payload.message ? payload.message : response.statusText || "Request failed";
+    const code = payload && typeof payload === "object" && payload.code ? payload.code : `HTTP_${response.status}`;
     throw new APIError(message, response.status, code, parsed);
   }
   if (parsed === undefined) {

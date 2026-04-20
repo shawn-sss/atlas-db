@@ -1,42 +1,48 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "../utils/markdown";
 import { apiFetch } from "../api/client";
 import ROUTES from "../api/routes";
-const Editor = React.lazy(() =>
-  import("../components/documents/document-editor/index.jsx")
-);
-import {
-  parseLocation,
-  slugToPath,
-  slugToSegments,
-  parseSearchParams,
-  buildSearchString,
-  navigate,
-} from "../utils/router";
+import { parseLocation, slugToPath, slugToSegments, parseSearchParams, buildSearchString, navigate } from "../utils/router";
 import { getPrefs, savePrefs } from "../utils/userPrefs";
-
 import AuthCanvas from "../components/auth/auth-canvas";
 import LoginCard from "../components/auth/login-card";
 import WorkspaceSetupFlow from "../components/workspace-setup";
 import WorkspaceLayout from "../components/workspace/Layout";
+import { primeEditorResources } from "../components/documents/document-editor/preload";
 import { DEFAULT_APP_TITLE } from "../constants/defaults";
-import {
-  SIDEBAR_PREFS_KEY_PREFIX,
-  DEFAULT_SECTION_FILTER,
-} from "../constants/app";
+import { SIDEBAR_PREFS_KEY_PREFIX, DEFAULT_SECTION_FILTER } from "../constants/app";
 import { buildTree } from "../utils/tree";
 import { cleanSlug, slugify, decodeSlug } from "../utils/slug";
 import { formatTimestamp, normalizeStatus } from "../utils/formatters";
 import { escapeHtml, extractSection } from "../utils/markdown-helpers";
 import { createDefaultCollapsedFolders } from "../utils/app-state";
 import { hasAdminAccess } from "../utils/userRoles";
-
+const loadEditorModule = () => import("../components/documents/document-editor/index.jsx");
+const Editor = React.lazy(loadEditorModule);
+let editorPreloadPromise = null;
+function preloadEditor() {
+  if (!editorPreloadPromise) {
+    editorPreloadPromise = loadEditorModule().then(async module => {
+      try {
+        await primeEditorResources();
+      } catch (err) {
+        console.warn("[workspace] preload editor resources", err);
+      }
+      return module;
+    }).catch(err => {
+      editorPreloadPromise = null;
+      throw err;
+    });
+  }
+  return editorPreloadPromise;
+}
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (err) {
+    return value;
+  }
+}
 export default function useWorkspaceSession() {
   const [user, setUser] = useState(null);
   const [documents, setDocuments] = useState([]);
@@ -61,10 +67,15 @@ export default function useWorkspaceSession() {
     timezone: "",
     appTitle: "",
     appIcon: "",
+    seededAccounts: [],
+    seededAccountsOnly: false
   });
   const [onboardingStep, setOnboardingStep] = useState("splash");
   const [onboardingComplete, setOnboardingComplete] = useState(false);
-  const [activeUsers, setActiveUsers] = useState({ count: 0, users: [] });
+  const [activeUsers, setActiveUsers] = useState({
+    count: 0,
+    users: []
+  });
   const [showEditor, setShowEditor] = useState(false);
   const [editorDualPane, setEditorDualPane] = useState(false);
   const [editorMode, setEditorMode] = useState("edit");
@@ -95,10 +106,10 @@ export default function useWorkspaceSession() {
   const [historyDiffEntryId, setHistoryDiffEntryId] = useState(null);
   const [historyRestoreId, setHistoryRestoreId] = useState(null);
   const [historyRestoreError, setHistoryRestoreError] = useState(null);
-  const [collapsedFolders, setCollapsedFolders] = useState(
-    createDefaultCollapsedFolders
-  );
+  const [collapsedFolders, setCollapsedFolders] = useState(createDefaultCollapsedFolders);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [navLoaded, setNavLoaded] = useState(false);
+  const [draftsLoaded, setDraftsLoaded] = useState(false);
   const searchAbortRef = useRef(null);
   const searchTimerRef = useRef(null);
   const openDocAbortRef = useRef(null);
@@ -108,13 +119,14 @@ export default function useWorkspaceSession() {
   const embedControllersRef = useRef(new Map());
   const treeAbortRef = useRef(null);
   const draftAbortRef = useRef(null);
-  const sidebarPrefsKey = useMemo(
-    () => `${SIDEBAR_PREFS_KEY_PREFIX}:${user?.username || "guest"}`,
-    [user?.username]
-  );
+  const historyDiffRequestRef = useRef(0);
+  const editorTransitionRef = useRef(0);
+  const pendingSectionSelectionRef = useRef("initial");
+  const initialLocationHandledRef = useRef(false);
+  const sidebarPrefsKey = useMemo(() => `${SIDEBAR_PREFS_KEY_PREFIX}:${user?.username || "guest"}`, [user?.username]);
   const docByIdMap = useMemo(() => {
     const map = new Map();
-    documents.forEach((doc) => {
+    documents.forEach(doc => {
       if (doc.doc_id) {
         map.set(doc.doc_id, doc);
       }
@@ -123,7 +135,7 @@ export default function useWorkspaceSession() {
   }, [documents]);
   const docBySlugMap = useMemo(() => {
     const map = new Map();
-    documents.forEach((doc) => {
+    documents.forEach(doc => {
       if (doc.slug) {
         map.set(cleanSlug(doc.slug), doc);
       }
@@ -134,24 +146,19 @@ export default function useWorkspaceSession() {
     if (!selectedDoc) return null;
     return {
       status: normalizeStatus((selectedDoc.status || "").toLowerCase()),
-      owner: selectedDoc.owner || "",
+      owner: selectedDoc.owner || ""
     };
   }, [selectedDoc]);
   const [sectionFilter, setSectionFilter] = useState(DEFAULT_SECTION_FILTER);
-  const markdownResolver = useMemo(
-    () => ({
-      resolveDocById: (id) => docByIdMap.get(id),
-      resolveDocBySlug: (slug) =>
-        slug ? docBySlugMap.get(cleanSlug(slug)) : undefined,
-    }),
-    [docByIdMap, docBySlugMap]
-  );
+  const markdownResolver = useMemo(() => ({
+    resolveDocById: id => docByIdMap.get(id),
+    resolveDocBySlug: slug => slug ? docBySlugMap.get(cleanSlug(slug)) : undefined
+  }), [docByIdMap, docBySlugMap]);
   const aboutDocInfo = useMemo(() => {
     if (!selectedDoc) return null;
     const rawSlug = selectedDoc.slug || "";
     const normalizedSlug = cleanSlug(rawSlug).replace(/^\/+/, "");
-    const createdAtValue =
-      selectedDoc.created_at || selectedDoc.createdAt || selectedDoc.saved_at;
+    const createdAtValue = selectedDoc.created_at || selectedDoc.createdAt || selectedDoc.saved_at;
     const updatedAtValue = selectedDoc.updated_at || selectedDoc.updatedAt;
     return {
       title: selectedDoc.title || selectedDoc.slug || "Untitled",
@@ -159,27 +166,24 @@ export default function useWorkspaceSession() {
       status: normalizeStatus((selectedDoc.status || "").toLowerCase()),
       createdBy: selectedDoc.owner || "Unknown",
       createdAt: formatTimestamp(createdAtValue),
-      updatedAt: formatTimestamp(updatedAtValue),
+      updatedAt: formatTimestamp(updatedAtValue)
     };
   }, [selectedDoc]);
-
   const draftNodesWithOrigin = useMemo(() => {
     if (sectionFilter !== "drafts") return draftNodes;
-    return (draftNodes || []).map((node) => {
+    return (draftNodes || []).map(node => {
       if (!node?.slug) return node;
       const clean = cleanSlug(node.slug);
       const exists = docBySlugMap.has(clean);
       return {
         ...node,
-        originLabel: exists ? "Existing" : "New",
+        originLabel: exists ? "Existing" : "New"
       };
     });
   }, [draftNodes, docBySlugMap, sectionFilter]);
-
   const filteredNavNodes = useMemo(() => {
-    const source =
-      sectionFilter === "drafts" ? draftNodesWithOrigin : navNodes;
-    return source.filter((node) => {
+    const source = sectionFilter === "drafts" ? draftNodesWithOrigin : navNodes;
+    return source.filter(node => {
       if (!node?.slug) return false;
       const nodeStatus = normalizeStatus((node.status || "").toLowerCase());
       if (sectionFilter === "home") {
@@ -197,38 +201,47 @@ export default function useWorkspaceSession() {
       return nodeStatus === "published";
     });
   }, [draftNodesWithOrigin, navNodes, sectionFilter]);
-
-  const tree = useMemo(
-    () => buildTree(filteredNavNodes, startPageSlug),
-    [filteredNavNodes, startPageSlug]
-  );
-  const defaultStartPageSlug = useMemo(() => {
-    const slug = startPageSlug || navNodes[0]?.slug || "";
-    return cleanSlug(slug) || null;
-  }, [navNodes, startPageSlug]);
-  const normalizedStartPageSlug = useMemo(
-    () => cleanSlug(startPageSlug) || null,
-    [startPageSlug]
-  );
+  const tree = useMemo(() => buildTree(filteredNavNodes, startPageSlug), [filteredNavNodes, startPageSlug]);
+  const firstSectionSlug = useMemo(() => cleanSlug(tree[0]?.slug || "") || null, [tree]);
+  const selectedDocVisibleInSection = useMemo(() => {
+    const normalizedSlug = cleanSlug(selectedDoc?.slug || "");
+    const selectedStatus = normalizeStatus((selectedDoc?.status || "").toLowerCase());
+    if (!normalizedSlug || !selectedStatus) return false;
+    return filteredNavNodes.some(node => {
+      if (!node?.slug) return false;
+      if (cleanSlug(node.slug) !== normalizedSlug) return false;
+      return normalizeStatus((node.status || "").toLowerCase()) === selectedStatus;
+    });
+  }, [filteredNavNodes, selectedDoc?.slug, selectedDoc?.status]);
+  const normalizedStartPageSlug = useMemo(() => cleanSlug(startPageSlug) || null, [startPageSlug]);
+  const sectionSelectionSlug = useMemo(() => {
+    if (sectionFilter === "home" && normalizedStartPageSlug) {
+      const startPageVisible = filteredNavNodes.some(node => cleanSlug(node?.slug || "") === normalizedStartPageSlug);
+      if (startPageVisible) {
+        return normalizedStartPageSlug;
+      }
+    }
+    return firstSectionSlug;
+  }, [filteredNavNodes, firstSectionSlug, normalizedStartPageSlug, sectionFilter]);
   const trimmedSearch = search.trim();
   const closeParentPicker = useCallback(() => {
     parentPickerAction.current = null;
     setParentPickerState(null);
   }, []);
-  const locationTree = useMemo(
-    () => buildTree(navNodes, startPageSlug),
-    [navNodes, startPageSlug]
-  );
+  const locationTree = useMemo(() => buildTree(navNodes, startPageSlug), [navNodes, startPageSlug]);
   const locationOptions = useMemo(() => {
-    const options = [{ slug: "", label: "Root" }];
+    const options = [{
+      slug: "",
+      label: "Root"
+    }];
     const walk = (nodes, depth = 0) => {
-      (nodes || []).forEach((node) => {
+      (nodes || []).forEach(node => {
         if (node?.is_folder) {
           const indent = depth ? `${"- ".repeat(depth)}` : "";
           const label = node.title || node.slug || "Untitled";
           options.push({
             slug: cleanSlug(node.slug),
-            label: `${indent}${label}`,
+            label: `${indent}${label}`
           });
         }
         if (node?.children && node.children.length) {
@@ -243,65 +256,67 @@ export default function useWorkspaceSession() {
     parentPickerAction.current = action;
     setParentPickerState(state);
   }, []);
-  const handleParentSelected = useCallback(
-    async (slug) => {
-      const normalized = cleanSlug(slug || "");
-      const action = parentPickerAction.current;
-      closeParentPicker();
-      if (!action) return;
-      try {
-        await action(normalized);
-      } catch (err) {
-        setError(err?.message || "Could not complete action");
-      }
-    },
-    [closeParentPicker]
-  );
-  const openCreateEditor = useCallback((isFolder) => {
+  const cancelPendingEditorTransition = useCallback(() => {
+    editorTransitionRef.current += 1;
+  }, []);
+  const ensureEditorReady = useCallback(async () => {
+    const requestId = editorTransitionRef.current + 1;
+    editorTransitionRef.current = requestId;
+    try {
+      await preloadEditor();
+    } catch (err) {
+      console.warn("[workspace] preload editor", err);
+    }
+    return editorTransitionRef.current === requestId;
+  }, []);
+  const handleParentSelected = useCallback(async slug => {
+    const normalized = cleanSlug(slug || "");
+    const action = parentPickerAction.current;
+    closeParentPicker();
+    if (!action) return;
+    try {
+      await action(normalized);
+    } catch (err) {
+      setError(err?.message || "Could not complete action");
+    }
+  }, [closeParentPicker]);
+  const openCreateEditor = useCallback(async isFolder => {
+    const ready = await ensureEditorReady();
+    if (!ready) return;
     setEditorMode("new");
     setEditorDraft("");
     setEditing(true);
     setShowEditor(true);
     setEditorCreateFolderMode(isFolder);
-  }, []);
-  const openNewEditor = useCallback(() => {
+  }, [ensureEditorReady]);
+  const openNewEditor = useCallback(async () => {
     setShowNewModal(false);
     setPendingNewDocParent("");
-    openCreateEditor(false);
+    await openCreateEditor(false);
   }, [openCreateEditor]);
-  const handleEditorParentChange = useCallback((nextParent) => {
+  const handleEditorParentChange = useCallback(nextParent => {
     setPendingNewDocParent(cleanSlug(nextParent || ""));
   }, []);
-  const handleNewDocument = useCallback(() => {
+  const handleNewDocument = useCallback(async () => {
     setShowNewModal(false);
     setPendingNewDocParent("");
-    openCreateEditor(false);
+    await openCreateEditor(false);
   }, [openCreateEditor]);
   const promptNewFolder = useCallback(() => {
     setShowNewModal(false);
-    const defaultParent = selectedDoc?.is_folder
-      ? cleanSlug(selectedDoc.slug)
-      : cleanSlug(selectedDoc?.parent_slug || "");
-    requestParentPicker(
-      {
-        title: "New folder location",
-        subtitle: "Select a parent folder for the new folder.",
-        confirmLabel: "Create folder here",
-        initialSelection: defaultParent,
-      },
-      async (targetParent) => {
-        setPendingFolderParent(targetParent || "");
-        setFolderError(null);
-        setFolderName("");
-        setShowFolderPrompt(true);
-      }
-    );
-  }, [
-    requestParentPicker,
-    selectedDoc?.is_folder,
-    selectedDoc?.slug,
-    selectedDoc?.parent_slug,
-  ]);
+    const defaultParent = selectedDoc?.is_folder ? cleanSlug(selectedDoc.slug) : cleanSlug(selectedDoc?.parent_slug || "");
+    requestParentPicker({
+      title: "New folder location",
+      subtitle: "Select a parent folder for the new folder.",
+      confirmLabel: "Create folder here",
+      initialSelection: defaultParent
+    }, async targetParent => {
+      setPendingFolderParent(targetParent || "");
+      setFolderError(null);
+      setFolderName("");
+      setShowFolderPrompt(true);
+    });
+  }, [requestParentPicker, selectedDoc?.is_folder, selectedDoc?.slug, selectedDoc?.parent_slug]);
   const closeFolderPrompt = useCallback(() => {
     setShowFolderPrompt(false);
     setFolderError(null);
@@ -310,77 +325,201 @@ export default function useWorkspaceSession() {
     setPendingFolderParent("");
   }, []);
   const openNewModal = useCallback(() => {
-    openNewEditor();
+    void openNewEditor();
   }, [openNewEditor]);
   const closeNewModal = useCallback(() => {
     setShowNewModal(false);
   }, []);
-
+  const contextualSearch = useMemo(() => {
+    const includeSection = sectionFilter && sectionFilter !== DEFAULT_SECTION_FILTER;
+    return buildSearchString({
+      q: search || "",
+      section: includeSection ? sectionFilter : ""
+    });
+  }, [search, sectionFilter]);
+  const buildContextPath = useCallback((slug = "") => {
+    const normalizedSlug = cleanSlug(slug || "");
+    const path = normalizedSlug ? slugToPath(normalizedSlug) : "/";
+    return `${path}${contextualSearch}`;
+  }, [contextualSearch]);
+  const navigateToContextPath = useCallback(slug => {
+    if (typeof window === "undefined") return;
+    const sourceSlug = slug === undefined ? selectedDoc?.slug || "" : slug || "";
+    const normalizedSlug = cleanSlug(sourceSlug);
+    const next = buildContextPath(normalizedSlug);
+    const current = window.location.pathname + window.location.search;
+    if (current === next) return;
+    navigate(next, {
+      replace: true,
+      state: normalizedSlug ? {
+        slug: normalizedSlug
+      } : {}
+    });
+  }, [buildContextPath, selectedDoc?.slug]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     let mounted = true;
-    try {
-      setPrefsLoaded(false);
-    } catch (e) {}
+    setPrefsLoaded(false);
     (async () => {
       try {
         const parsed = await getPrefs(user, sidebarPrefsKey);
         const storedCollapsedFolders = parsed?.collapsedFolders;
-        const next =
-          storedCollapsedFolders && typeof storedCollapsedFolders === "object"
-            ? storedCollapsedFolders
-            : createDefaultCollapsedFolders();
+        const next = storedCollapsedFolders && typeof storedCollapsedFolders === "object" ? storedCollapsedFolders : createDefaultCollapsedFolders();
         if (mounted) setCollapsedFolders(next);
       } catch (err) {
         if (mounted) setCollapsedFolders(createDefaultCollapsedFolders());
       }
       if (mounted) {
-        try {
-          setPrefsLoaded(true);
-        } catch (e) {}
+        setPrefsLoaded(true);
       }
     })();
     return () => {
       mounted = false;
     };
   }, [sidebarPrefsKey, user]);
-
-  useEffect(() => {
-    return () => {
-      if (treeAbortRef.current) {
-        try {
-          treeAbortRef.current.abort();
-        } catch (e) {
-          console.warn("[workspace] abort tree fetch", e);
-        }
-      }
-      if (draftAbortRef.current) {
-        try {
-          draftAbortRef.current.abort();
-        } catch (e) {
-          console.warn("[workspace] abort draft fetch", e);
-        }
-      }
-    };
-  }, []);
-
   useEffect(() => {
     if (typeof window === "undefined" || !prefsLoaded) return;
-    savePrefs(user, { collapsedFolders }, sidebarPrefsKey);
+    savePrefs(user, {
+      collapsedFolders
+    }, sidebarPrefsKey);
   }, [collapsedFolders, sidebarPrefsKey, prefsLoaded, user]);
-
   useEffect(() => {
     if (!showEditor) {
       setEditorCreateFolderMode(false);
     }
   }, [showEditor]);
-
-  const toggleFolderCollapse = useCallback((slug) => {
-    setCollapsedFolders((prev) => ({
+  const toggleFolderCollapse = useCallback(slug => {
+    setCollapsedFolders(prev => ({
       ...prev,
-      [slug]: !prev?.[slug],
+      [slug]: !prev?.[slug]
     }));
   }, []);
+  const abortRequest = useCallback((requestRef, label) => {
+    const controller = requestRef.current;
+    if (!controller) return;
+    requestRef.current = null;
+    try {
+      controller.abort();
+    } catch (err) {
+      console.warn(`[workspace] abort ${label}`, err);
+    }
+  }, []);
+  useEffect(() => {
+    return () => {
+      abortRequest(treeAbortRef, "nav fetch");
+      abortRequest(draftAbortRef, "draft fetch");
+      abortRequest(openDocAbortRef, "document fetch");
+    };
+  }, [abortRequest]);
+  const clearActiveDocument = useCallback(() => {
+    setSelectedDoc(null);
+    setContent("");
+  }, []);
+  const resetWorkspaceData = useCallback(() => {
+    clearActiveDocument();
+    setDocuments([]);
+    setNavNodes([]);
+    setDraftNodes([]);
+    setSearchResults([]);
+    setSearchError(null);
+    setHistoryEntries([]);
+    setHistoryDiffData(null);
+    setStartPageSlug(null);
+    setNavLoaded(false);
+    setDraftsLoaded(false);
+  }, [clearActiveDocument]);
+  const syncDocumentLocation = useCallback(slug => {
+    if (typeof window === "undefined" || !slug) return;
+    const path = slugToPath(slug);
+    const search = window.location.search || "";
+    const full = `${path}${search}`;
+    if (window.location.pathname + window.location.search !== full) {
+      navigate(full, {
+        state: {
+          slug
+        }
+      });
+    }
+  }, []);
+  const loadTreeItems = useCallback(async ({
+    abortRef,
+    route,
+    errorMessage,
+    onLoaded
+  }) => {
+    abortRequest(abortRef, abortRef === treeAbortRef ? "nav fetch" : "draft fetch");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setTreeLoading(true);
+    setError(null);
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        setError(errorMessage);
+      }
+    }, 8000);
+    try {
+      const data = await apiFetch(route, {
+        signal: controller.signal
+      });
+      if (abortRef.current !== controller) return [];
+      const list = Array.isArray(data) ? data : [];
+      onLoaded(list);
+      return list;
+    } catch (err) {
+      if (err?.name === "AbortError") return [];
+      if (abortRef.current !== controller) return [];
+      setError(err.message || errorMessage);
+      return [];
+    } finally {
+      clearTimeout(timeoutId);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setTreeLoading(false);
+      }
+    }
+  }, [abortRequest]);
+  const openWorkspaceItem = useCallback(async ({
+    slug,
+    buildRoute,
+    notFoundMessage,
+    syncLocation = false
+  }) => {
+    if (!slug) return null;
+    const clean = cleanSlug(slug);
+    abortRequest(openDocAbortRef, "document fetch");
+    const controller = new AbortController();
+    openDocAbortRef.current = controller;
+    const requestId = openDocRequestRef.current + 1;
+    openDocRequestRef.current = requestId;
+    setLoadingDoc(true);
+    try {
+      const data = await apiFetch(buildRoute(clean), {
+        signal: controller.signal
+      });
+      if (openDocRequestRef.current !== requestId) return null;
+      setSelectedDoc(data);
+      setContent(data.content || "");
+      if (syncLocation) {
+        if (data.is_start_page) setStartPageSlug(data.slug);
+        syncDocumentLocation(data.slug);
+      }
+      return data;
+    } catch (err) {
+      if (err?.name === "AbortError") return null;
+      if (openDocRequestRef.current !== requestId) return null;
+      setError(err.message || notFoundMessage);
+      clearActiveDocument();
+      return null;
+    } finally {
+      if (openDocRequestRef.current === requestId) {
+        if (openDocAbortRef.current === controller) {
+          openDocAbortRef.current = null;
+        }
+        setLoadingDoc(false);
+      }
+    }
+  }, [abortRequest, clearActiveDocument, syncDocumentLocation]);
   const loadBootstrap = useCallback(async () => {
     try {
       const data = await apiFetch(ROUTES.bootstrap);
@@ -391,75 +530,58 @@ export default function useWorkspaceSession() {
         timezone: data.timezone || "",
         appTitle: data.appTitle || "",
         appIcon: data.appIcon || "",
+        seededAccounts: Array.isArray(data.seededAccounts) ? data.seededAccounts : [],
+        seededAccountsOnly: !!data.seededAccountsOnly
       });
       setStartPageSlug(data.startPageSlug || null);
     } catch (err) {
-      setBootstrapInfo((prev) => ({
+      setBootstrapInfo(prev => ({
         ...prev,
         bootId: "",
         startPageSlug: prev.startPageSlug,
         timezone: prev.timezone,
         appTitle: prev.appTitle,
         appIcon: prev.appIcon,
+        seededAccounts: prev.seededAccounts,
+        seededAccountsOnly: prev.seededAccountsOnly
       }));
       setStartPageSlug(null);
     } finally {
       setBootstrapReady(true);
     }
   }, []);
-
-  const handleAppIconChange = useCallback((iconUrl) => {
-    setBootstrapInfo((prev) => ({ ...prev, appIcon: iconUrl || "" }));
+  const handleAppIconChange = useCallback(iconUrl => {
+    setBootstrapInfo(prev => ({
+      ...prev,
+      appIcon: iconUrl || ""
+    }));
   }, []);
-
-  const handleAppTitleChange = useCallback((newTitle) => {
-    setBootstrapInfo((prev) => ({ ...prev, appTitle: newTitle || "" }));
+  const handleAppTitleChange = useCallback(newTitle => {
+    setBootstrapInfo(prev => ({
+      ...prev,
+      appTitle: newTitle || ""
+    }));
   }, []);
-
   const loadNav = useCallback(async () => {
-    if (treeAbortRef.current) {
-      treeAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    treeAbortRef.current = controller;
-    setTreeLoading(true);
-    setError(null);
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch (e) {
-        console.warn("[workspace] abort nav fetch", e);
-      }
-      if (treeAbortRef.current === controller) {
-        setError("Failed to load pages (retry)");
-      }
-    }, 8000);
+    setNavLoaded(false);
     const statuses = ["published", "unlisted"];
     const params = new URLSearchParams();
     if (statuses.length) params.set("status", statuses.join(","));
-    const navUrl = params.toString()
-      ? `${ROUTES.documentsTree}?${params.toString()}`
-      : ROUTES.documentsTree;
+    const route = params.toString() ? `${ROUTES.documentsTree}?${params.toString()}` : ROUTES.documentsTree;
     try {
-      const data = await apiFetch(navUrl, {
-        signal: controller.signal,
+      return await loadTreeItems({
+        abortRef: treeAbortRef,
+        route,
+        errorMessage: "Failed to load pages (retry)",
+        onLoaded: list => {
+          setNavNodes(list);
+          setDocuments(list);
+        }
       });
-      if (treeAbortRef.current !== controller) return;
-      const list = Array.isArray(data) ? data : [];
-      setNavNodes(list);
-      setDocuments(list);
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      if (treeAbortRef.current !== controller) return;
-      setError(err.message || "Failed to load pages (retry)");
     } finally {
-      clearTimeout(timeoutId);
-      if (treeAbortRef.current === controller) {
-        setTreeLoading(false);
-      }
+      setNavLoaded(true);
     }
-  }, []);
-
+  }, [loadTreeItems]);
   const loadHistory = useCallback(async () => {
     const targetSlug = selectedDoc?.slug;
     if (!targetSlug) {
@@ -471,9 +593,7 @@ export default function useWorkspaceSession() {
     setHistoryLoading(true);
     setHistoryError(null);
     try {
-      const data = await apiFetch(
-        `/api/documenthistory/${encodeURIComponent(targetSlug)}`
-      );
+      const data = await apiFetch(`/api/documenthistory/${encodeURIComponent(targetSlug)}`);
       if (selectedDoc?.slug !== targetSlug) return;
       setHistoryEntries(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -486,127 +606,171 @@ export default function useWorkspaceSession() {
       }
     }
   }, [selectedDoc?.slug]);
-
-  const handleHistoryDiff = useCallback(
-    async (entry) => {
-      const targetSlug = selectedDoc?.slug;
-      if (!targetSlug) return;
-      setHistoryDiffLoading(true);
-      setHistoryDiffError(null);
-      setHistoryDiffEntryId(entry.id);
-      try {
-        const data = await apiFetch(
-          `/api/documenthistory/diff/${encodeURIComponent(targetSlug)}?id=${
-            entry.id
-          }`
-        );
-        if (selectedDoc?.slug !== targetSlug) return;
-        setHistoryDiffData(data);
-        setShowHistoryDiff(true);
-      } catch (err) {
-        if (selectedDoc?.slug !== targetSlug) return;
-        setHistoryDiffError(err.message || "Unable to load diff");
-      } finally {
-        if (selectedDoc?.slug === targetSlug) {
-          setHistoryDiffLoading(false);
-        }
-        setHistoryDiffEntryId(null);
-      }
-    },
-    [selectedDoc?.slug]
-  );
-
-  const openDocument = useCallback(async (slug) => {
-    if (!slug) return;
-    const clean = cleanSlug(slug);
-    if (openDocAbortRef.current) {
-      openDocAbortRef.current.abort();
+  const loadHistoryDiffById = useCallback(async (targetSlug, entryId) => {
+    const normalizedSlug = cleanSlug(targetSlug || "");
+    const normalizedId = Number(entryId);
+    if (!normalizedSlug || !Number.isInteger(normalizedId) || normalizedId <= 0) {
+      return;
     }
-    const controller = new AbortController();
-    openDocAbortRef.current = controller;
-    const requestId = openDocRequestRef.current + 1;
-    openDocRequestRef.current = requestId;
-    setLoadingDoc(true);
+    const requestId = historyDiffRequestRef.current + 1;
+    historyDiffRequestRef.current = requestId;
+    setHistoryDiffLoading(true);
+    setHistoryDiffError(null);
+    setHistoryDiffEntryId(normalizedId);
+    setShowHistoryDiff(true);
     try {
-      const data = await apiFetch(
-        `/api/document/${encodeURIComponent(clean)}`,
-        { signal: controller.signal }
-      );
-      if (openDocRequestRef.current !== requestId) return;
-      setSelectedDoc(data);
-      setContent(data.content || "");
-      if (data.is_start_page) setStartPageSlug(data.slug);
-      try {
-        if (typeof window !== "undefined") {
-          const path = slugToPath(data.slug);
-          const search = window.location.search || "";
-          const full = `${path}${search}`;
-          if (window.location.pathname + window.location.search !== full) {
-            navigate(full, { state: { slug: data.slug } });
-          }
-        }
-      } catch (e) {}
+      const data = await apiFetch(ROUTES.documentHistoryDiff(encodeURIComponent(normalizedSlug), normalizedId));
+      if (historyDiffRequestRef.current !== requestId) return;
+      setHistoryDiffData(data);
     } catch (err) {
-      if (err?.name === "AbortError") return;
-      if (openDocRequestRef.current !== requestId) return;
-      setError(err.message || "Document not found");
-      setSelectedDoc(null);
-      setContent("");
+      if (historyDiffRequestRef.current !== requestId) return;
+      setHistoryDiffData(null);
+      setHistoryDiffError(err.message || "Unable to load diff");
     } finally {
-      if (openDocRequestRef.current === requestId) {
-        setLoadingDoc(false);
+      if (historyDiffRequestRef.current === requestId) {
+        setHistoryDiffLoading(false);
       }
     }
   }, []);
-
-  const openDraft = useCallback(async (slug) => {
-    if (!slug) return;
-    const clean = cleanSlug(slug);
-    if (openDocAbortRef.current) {
-      openDocAbortRef.current.abort();
+  const handleHistoryDiff = useCallback(async entry => {
+    if (!entry?.id || !selectedDoc?.slug) return;
+    await loadHistoryDiffById(selectedDoc.slug, entry.id);
+  }, [loadHistoryDiffById, selectedDoc?.slug]);
+  const openDocument = useCallback((slug, options = {}) => openWorkspaceItem({
+    slug,
+    buildRoute: clean => ROUTES.document(encodeURIComponent(clean)),
+    notFoundMessage: "Document not found",
+    syncLocation: options.syncLocation !== false
+  }), [openWorkspaceItem]);
+  const openDraft = useCallback(slug => openWorkspaceItem({
+    slug,
+    buildRoute: clean => ROUTES.draft(encodeURIComponent(clean)),
+    notFoundMessage: "Draft not found"
+  }), [openWorkspaceItem]);
+  const expandParentsForSlugInNodes = useCallback((slug, nodes) => {
+    const normalized = cleanSlug(slug || "");
+    if (!normalized) return;
+    const source = Array.isArray(nodes) ? nodes : [];
+    const map = new Map();
+    source.forEach(node => {
+      if (node?.slug) map.set(cleanSlug(node.slug), node);
+    });
+    let current = map.get(normalized);
+    if (!current) return;
+    const ancestors = [];
+    const seen = new Set();
+    while (current?.parent_slug || current?.parent) {
+      const parentSlug = cleanSlug(current.parent_slug || current.parent || "");
+      if (!parentSlug || seen.has(parentSlug)) break;
+      seen.add(parentSlug);
+      const parent = map.get(parentSlug);
+      if (!parent) break;
+      ancestors.push(parent.slug);
+      current = parent;
     }
-    const controller = new AbortController();
-    openDocAbortRef.current = controller;
-    const requestId = openDocRequestRef.current + 1;
-    openDocRequestRef.current = requestId;
-    setLoadingDoc(true);
-    try {
-      const data = await apiFetch(
-        ROUTES.draft(encodeURIComponent(clean)),
-        { signal: controller.signal }
-      );
-      if (openDocRequestRef.current !== requestId) return;
-      setSelectedDoc(data);
-      setContent(data.content || "");
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      if (openDocRequestRef.current !== requestId) return;
-      setError(err.message || "Draft not found");
-      setSelectedDoc(null);
-      setContent("");
-    } finally {
-      if (openDocRequestRef.current === requestId) {
-        setLoadingDoc(false);
-      }
-    }
+    if (!ancestors.length) return;
+    setCollapsedFolders(prev => {
+      let changed = false;
+      const next = {
+        ...prev
+      };
+      ancestors.forEach(ancestorSlug => {
+        if (next[ancestorSlug] !== false) {
+          next[ancestorSlug] = false;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
   }, []);
-
-  const fetchActiveUsers = useCallback(async (signal) => {
+  const expandParentsForSlug = useCallback(slug => {
+    expandParentsForSlugInNodes(slug, navNodes);
+  }, [expandParentsForSlugInNodes, navNodes]);
+  const expandParentsForVisibleSlug = useCallback(slug => {
+    expandParentsForSlugInNodes(slug, filteredNavNodes);
+  }, [expandParentsForSlugInNodes, filteredNavNodes]);
+  const selectedSlug = selectedDoc?.slug ? cleanSlug(selectedDoc.slug) : null;
+  const selectSectionDocument = useCallback((slug, options = {}) => {
+    const normalizedSlug = cleanSlug(slug || "");
+    if (!normalizedSlug) {
+      clearActiveDocument();
+      navigateToContextPath("");
+      return null;
+    }
+    const useDraft = sectionFilter === "drafts";
+    if (!useDraft) {
+      expandParentsForSlug(normalizedSlug);
+    }
+    if (normalizedSlug === selectedSlug) {
+      return null;
+    }
+    closeEditor();
+    if (useDraft) {
+      return openDraft(normalizedSlug);
+    }
+    return openDocument(normalizedSlug, options);
+  }, [clearActiveDocument, closeEditor, expandParentsForSlug, navigateToContextPath, openDocument, openDraft, sectionFilter, selectedSlug]);
+  const openRoutedDocument = useCallback(async (slug, onLoaded) => {
+    const doc = await openDocument(slug, {
+      syncLocation: false
+    });
+    if (!doc) return null;
+    if (typeof onLoaded === "function") {
+      await onLoaded(doc);
+    }
+    return doc;
+  }, [openDocument]);
+  const openAboutRoute = useCallback(async slug => {
+    await openRoutedDocument(slug, () => {
+      setShowAboutModal(true);
+    });
+  }, [openRoutedDocument]);
+  const openReaderRoute = useCallback(async slug => {
+    await openRoutedDocument(slug, () => {
+      setShowReaderModal(true);
+    });
+  }, [openRoutedDocument]);
+  const openEditRoute = useCallback(async slug => {
+    const editorReady = ensureEditorReady();
+    await openRoutedDocument(slug, () => {
+      return editorReady.then(ready => {
+        if (!ready) return;
+        setEditorMode("edit");
+        setShowEditor(true);
+        setEditing(true);
+      });
+    });
+  }, [ensureEditorReady, openRoutedDocument]);
+  const openHistoryRoute = useCallback(async (slug, historyId) => {
+    await openRoutedDocument(slug, async doc => {
+      setShowAboutModal(true);
+      if (historyId) {
+        await loadHistoryDiffById(doc.slug, historyId);
+      }
+    });
+  }, [loadHistoryDiffById, openRoutedDocument]);
+  const fetchActiveUsers = useCallback(async signal => {
     try {
-      const data = await apiFetch(ROUTES.activeUsers, { signal });
+      const data = await apiFetch(ROUTES.activeUsers, {
+        signal
+      });
       if (signal?.aborted) return;
       const users = Array.isArray(data?.users) ? data.users : [];
-      const count =
-        typeof data?.count === "number" ? data.count : users.length;
-      setActiveUsers({ count, users });
+      const count = typeof data?.count === "number" ? data.count : users.length;
+      setActiveUsers({
+        count,
+        users
+      });
     } catch (err) {
       if (err?.name === "AbortError") return;
     }
   }, []);
-
   useEffect(() => {
     if (!user) {
-      setActiveUsers({ count: 0, users: [] });
+      setActiveUsers({
+        count: 0,
+        users: []
+      });
       return;
     }
     let controller;
@@ -622,152 +786,45 @@ export default function useWorkspaceSession() {
       clearInterval(intervalId);
     };
   }, [user, fetchActiveUsers]);
-
   const loadDrafts = useCallback(async () => {
-    if (draftAbortRef.current) {
-      draftAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    draftAbortRef.current = controller;
-    setTreeLoading(true);
-    setError(null);
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch (e) {
-        console.warn("[workspace] abort draft fetch", e);
-      }
-      if (draftAbortRef.current === controller) {
-        setError("Failed to load drafts (retry)");
-      }
-    }, 8000);
+    setDraftsLoaded(false);
     try {
-      const data = await apiFetch(ROUTES.draftsTree, {
-        signal: controller.signal,
+      return await loadTreeItems({
+        abortRef: draftAbortRef,
+        route: ROUTES.draftsTree,
+        errorMessage: "Failed to load drafts (retry)",
+        onLoaded: list => {
+          setDraftNodes(list);
+        }
       });
-      if (draftAbortRef.current !== controller) return;
-      const list = Array.isArray(data) ? data : [];
-      setDraftNodes(list);
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      if (draftAbortRef.current !== controller) return;
-      setError(err.message || "Failed to load drafts (retry)");
     } finally {
-      clearTimeout(timeoutId);
-      if (draftAbortRef.current === controller) {
-        setTreeLoading(false);
-      }
+      setDraftsLoaded(true);
     }
-  }, []);
-  const expandParentsForSlug = useCallback(
-    (slug) => {
-      const normalized = cleanSlug(slug || "");
-      if (!normalized) return;
-      const map = new Map();
-      navNodes.forEach((node) => {
-        if (node?.slug) map.set(cleanSlug(node.slug), node);
-      });
-      let current = map.get(normalized);
-      if (!current) return;
-      const ancestors = [];
-      const seen = new Set();
-      while (current?.parent_slug || current?.parent) {
-        const parentSlug = cleanSlug(current.parent_slug || current.parent || "");
-        if (!parentSlug || seen.has(parentSlug)) break;
-        seen.add(parentSlug);
-        const parent = map.get(parentSlug);
-        if (!parent) break;
-        ancestors.push(parent.slug);
-        current = parent;
-      }
-      if (!ancestors.length) return;
-      setCollapsedFolders((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        ancestors.forEach((ancestorSlug) => {
-          if (next[ancestorSlug] !== false) {
-            next[ancestorSlug] = false;
-            changed = true;
-          }
-        });
-        return changed ? next : prev;
-      });
-    },
-    [navNodes]
-  );
+  }, [loadTreeItems]);
   const closeEditor = useCallback(() => {
+    cancelPendingEditorTransition();
     setShowEditor(false);
     setEditing(false);
     setEditorDualPane(false);
     setEditorDraft(null);
     setPendingNewDocParent("");
-  }, []);
-  const selectedSlug = selectedDoc?.slug ? cleanSlug(selectedDoc.slug) : null;
-  const handleSidebarSelect = useCallback(
-    (slug) => {
-      const normalizedSlug = cleanSlug(slug);
-      if (!normalizedSlug) return;
-      const useDraft = sectionFilter === "drafts";
-      closeEditor();
-      if (!useDraft) {
-        expandParentsForSlug(normalizedSlug);
-      }
-      if (normalizedSlug === selectedSlug) {
-        if (useDraft) {
-          setSelectedDoc(null);
-          setContent("");
-          return;
-        }
-        const parentSlug = selectedDoc
-          ? cleanSlug(selectedDoc.parent_slug || selectedDoc.parent || "")
-          : null;
-        if (parentSlug && parentSlug !== normalizedSlug) {
-          useDraft ? openDraft(parentSlug) : openDocument(parentSlug);
-          return;
-        }
-        if (defaultStartPageSlug) {
-          useDraft ? openDraft(defaultStartPageSlug) : openDocument(defaultStartPageSlug);
-          return;
-        }
-        setSelectedDoc(null);
-        setContent("");
-        try {
-          if (typeof window !== "undefined") {
-            const rootPath = "/";
-            if (window.location.pathname !== rootPath) {
-              navigate(rootPath, { state: {} });
-            }
-          }
-        } catch (e) {
-          console.warn("[workspace] navigate root", e);
-        }
+  }, [cancelPendingEditorTransition]);
+  const handleSidebarSelect = useCallback(slug => {
+    selectSectionDocument(slug);
+  }, [selectSectionDocument]);
+  const refreshAfterSave = useCallback(async (slug, status) => {
+    await loadNav();
+    if (status === "draft") {
+      await loadDrafts();
+    }
+    if (slug) {
+      if (status === "draft") {
+        await openDraft(slug);
         return;
       }
-      useDraft ? openDraft(normalizedSlug) : openDocument(normalizedSlug);
-    },
-    [
-      defaultStartPageSlug,
-      expandParentsForSlug,
-      openDocument,
-      openDraft,
-      selectedDoc,
-      selectedSlug,
-      closeEditor,
-      sectionFilter,
-    ]
-  );
-
-  const refreshAfterSave = useCallback(
-    async (slug, status) => {
-      await loadNav();
-      if (status === "draft") {
-        await loadDrafts();
-      }
-      if (slug) openDocument(slug);
-    },
-    [loadNav, loadDrafts, openDocument]
-  );
-
+      await openDocument(slug);
+    }
+  }, [loadNav, loadDrafts, openDocument, openDraft]);
   const handleFolderSave = useCallback(async () => {
     const trimmedName = folderName.trim();
     if (!trimmedName) {
@@ -784,9 +841,7 @@ export default function useWorkspaceSession() {
       do {
         const suffix = attempt === 0 ? "" : `-${attempt}`;
         const candidateBase = `${base}${suffix}`;
-        candidateSlug = parentSlug
-          ? `${parentSlug}/${candidateBase}`
-          : candidateBase;
+        candidateSlug = parentSlug ? `${parentSlug}/${candidateBase}` : candidateBase;
         attempt++;
         if (attempt > 50) {
           throw new Error("Unable to pick a unique folder name");
@@ -798,8 +853,10 @@ export default function useWorkspaceSession() {
       const endpoint = `/api/document/${encodeURI(requestSlug)}`;
       const data = await apiFetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-        body: content,
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8"
+        },
+        body: content
       });
       const createdSlug = data?.slug || candidateSlug;
       closeFolderPrompt();
@@ -808,135 +865,105 @@ export default function useWorkspaceSession() {
       setFolderSaving(false);
       setFolderError(err.message || "Failed to create folder");
     }
-  }, [
-    closeFolderPrompt,
-    docBySlugMap,
-    folderName,
-    pendingFolderParent,
-    refreshAfterSave,
-    user?.username,
-  ]);
-
-  const handleMoveNode = useCallback(
-    (node) => {
-      if (!node?.slug) return;
-      const defaultParent = cleanSlug(node.parent_slug || "");
-      const label = node.is_folder ? "folder" : "document";
-      requestParentPicker(
-        {
-          title: `Move ${label}`,
-          subtitle: `Choose a parent folder for ${node.title || node.slug}.`,
-          confirmLabel: "Move here",
-          initialSelection: defaultParent,
-          blockedSlug: node.slug,
-        },
-        async (targetParent) => {
-          const payload = {
-            slug: node.slug,
-            parent: targetParent || "",
-          };
-          const data = await apiFetch("/api/document/move", {
-            method: "POST",
-            body: payload,
-          });
-          await refreshAfterSave(data?.slug || node.slug);
+  }, [closeFolderPrompt, docBySlugMap, folderName, pendingFolderParent, refreshAfterSave, user?.username]);
+  const handleMoveNode = useCallback(node => {
+    if (!node?.slug) return;
+    const defaultParent = cleanSlug(node.parent_slug || "");
+    const label = node.is_folder ? "folder" : "document";
+    requestParentPicker({
+      title: `Move ${label}`,
+      subtitle: `Choose a parent folder for ${node.title || node.slug}.`,
+      confirmLabel: "Move here",
+      initialSelection: defaultParent,
+      blockedSlug: node.slug
+    }, async targetParent => {
+      const payload = {
+        slug: node.slug,
+        parent: targetParent || ""
+      };
+      const data = await apiFetch("/api/document/move", {
+        method: "POST",
+        body: payload
+      });
+      await refreshAfterSave(data?.slug || node.slug);
+    });
+  }, [refreshAfterSave, requestParentPicker]);
+  const handleHistoryRollback = useCallback(async entry => {
+    const targetSlug = selectedDoc?.slug;
+    if (!targetSlug || !canRestoreHistory) return;
+    if (!window.confirm("This will overwrite the current document with the selected revision. Continue?")) {
+      return;
+    }
+    setHistoryRestoreError(null);
+    setHistoryRestoreId(entry.id);
+    try {
+      await apiFetch(`/api/documentrestore/${encodeURIComponent(targetSlug)}`, {
+        method: "POST",
+        body: {
+          id: entry.id
         }
-      );
-    },
-    [refreshAfterSave, requestParentPicker]
-  );
-
-  const handleHistoryRollback = useCallback(
-    async (entry) => {
-      const targetSlug = selectedDoc?.slug;
-      if (!targetSlug || !canRestoreHistory) return;
-      if (
-        !window.confirm(
-          "This will overwrite the current document with the selected revision. Continue?"
-        )
-      ) {
-        return;
-      }
-      setHistoryRestoreError(null);
-      setHistoryRestoreId(entry.id);
-      try {
-        await apiFetch(
-          `/api/documentrestore/${encodeURIComponent(targetSlug)}`,
-          {
-            method: "POST",
-            body: { id: entry.id },
-          }
-        );
-        await refreshAfterSave(targetSlug);
-        await loadHistory();
-      } catch (err) {
-        setHistoryRestoreError(err.message || "Rollback failed");
-      } finally {
-        setHistoryRestoreId(null);
-      }
-    },
-    [canRestoreHistory, loadHistory, refreshAfterSave, selectedDoc?.slug]
-  );
-
-  const handleMarkdownLinkClick = useCallback(
-    (event) => {
-      let node = event.target;
-      if (!(node instanceof Element)) {
-        node = node?.parentElement || null;
-      }
-      if (!node) return;
-      const anchor = node.closest("a.wiki-link");
-      if (!anchor) return;
-      event.preventDefault();
-      const docId = anchor.dataset.docId;
-      if (docId && docByIdMap.has(docId)) {
-        const targetSlug = docByIdMap.get(docId).slug;
-        expandParentsForSlug(targetSlug);
-        openDocument(targetSlug);
-        return;
-      }
-      const slug = anchor.dataset.wikiSlug;
-      if (slug) {
-        const decoded = decodeSlug(slug);
-        expandParentsForSlug(decoded);
-        openDocument(decoded);
-      }
-    },
-    [docByIdMap, expandParentsForSlug, openDocument]
-  );
-
-  const handleEnterDualPane = useCallback((draft) => {
+      });
+      await refreshAfterSave(targetSlug);
+      await loadHistory();
+    } catch (err) {
+      setHistoryRestoreError(err.message || "Rollback failed");
+    } finally {
+      setHistoryRestoreId(null);
+    }
+  }, [canRestoreHistory, loadHistory, refreshAfterSave, selectedDoc?.slug]);
+  const handleMarkdownLinkClick = useCallback(event => {
+    let node = event.target;
+    if (!(node instanceof Element)) {
+      node = node?.parentElement || null;
+    }
+    if (!node) return;
+    const anchor = node.closest("a.wiki-link");
+    if (!anchor) return;
+    event.preventDefault();
+    const docId = anchor.dataset.docId;
+    if (docId && docByIdMap.has(docId)) {
+      const targetSlug = docByIdMap.get(docId).slug;
+      expandParentsForSlug(targetSlug);
+      openDocument(targetSlug);
+      return;
+    }
+    const slug = anchor.dataset.wikiSlug;
+    if (slug) {
+      const decoded = decodeSlug(slug);
+      expandParentsForSlug(decoded);
+      openDocument(decoded);
+    }
+  }, [docByIdMap, expandParentsForSlug, openDocument]);
+  const handleEnterDualPane = useCallback(async draft => {
+    const ready = await ensureEditorReady();
+    if (!ready) return;
     setEditorDraft(draft);
     setEditorDualPane(true);
-  }, []);
-
-  const handleExitDualPane = useCallback((draft) => {
+  }, [ensureEditorReady]);
+  const handleExitDualPane = useCallback(draft => {
     if (typeof draft === "string") {
       setEditorDraft(draft);
     }
     setEditorDualPane(false);
   }, []);
-
-  const handlePreviewEdit = useCallback(() => {
+  const handlePreviewEdit = useCallback(async () => {
+    const ready = await ensureEditorReady();
+    if (!ready) return;
     setEditorMode("edit");
     setEditorDraft(content);
     setEditing(true);
     setShowEditor(true);
-  }, [content]);
-
+  }, [content, ensureEditorReady]);
   const handleShowAbout = useCallback(() => {
     setShowAboutModal(true);
   }, []);
-
   const handleOpenReader = useCallback(() => {
     setShowReaderModal(true);
   }, []);
-
   const handleCloseReader = useCallback(() => {
     setShowReaderModal(false);
   }, []);
-
-  const handleEditorSaved = async (payload) => {
+  const handleEditorSaved = async payload => {
     const savedSlug = typeof payload === "string" ? payload : payload?.slug;
     const savedStatus = typeof payload === "object" ? payload?.status : null;
     closeEditor();
@@ -948,71 +975,67 @@ export default function useWorkspaceSession() {
       await loadNav();
     }
   };
-
-  const handleDraftAutoSaved = useCallback(
-    async (payload) => {
-      if (sectionFilter === "drafts") {
-        await loadDrafts();
+  const handleDraftAutoSaved = useCallback(async () => {
+    if (sectionFilter === "drafts") {
+      await loadDrafts();
+    }
+  }, [sectionFilter, loadDrafts]);
+  const handleSetStartPage = useCallback(async slug => {
+    if (!slug) return;
+    await apiFetch("/api/start-page", {
+      method: "PUT",
+      body: {
+        slug
       }
-    },
-    [sectionFilter, loadDrafts]
-  );
-
-  const handleSetStartPage = useCallback(
-    async (slug) => {
-      if (!slug) return;
-      await apiFetch("/api/start-page", {
-        method: "PUT",
-        body: { slug },
-      });
-      setStartPageSlug(slug);
-      setBootstrapInfo((prev) => ({ ...prev, startPageSlug: slug }));
-      setNavNodes((prev) =>
-        prev.map((node) => ({ ...node, is_start_page: node.slug === slug }))
-      );
-      await loadBootstrap();
-      await loadNav();
-    },
-    [loadBootstrap, loadNav]
-  );
-
-  const handleRemoveStartPage = useCallback(async () => {
-    await apiFetch("/api/start-page", { method: "DELETE" });
-    setStartPageSlug(null);
-    setBootstrapInfo((prev) => ({ ...prev, startPageSlug: "" }));
-    setNavNodes((prev) =>
-      prev.map((node) => ({ ...node, is_start_page: false }))
-    );
+    });
+    setStartPageSlug(slug);
+    setBootstrapInfo(prev => ({
+      ...prev,
+      startPageSlug: slug
+    }));
+    setNavNodes(prev => prev.map(node => ({
+      ...node,
+      is_start_page: node.slug === slug
+    })));
     await loadBootstrap();
     await loadNav();
   }, [loadBootstrap, loadNav]);
-
-  const handleTogglePin = useCallback(
-    async (slug, nextPinned) => {
-      if (!slug) return;
-      const endpoint = `/api/document/pin/${encodeURIComponent(slug)}`;
-      await apiFetch(endpoint, { method: nextPinned ? "PUT" : "DELETE" });
-      setNavNodes((prev) =>
-        prev.map((node) =>
-          node.slug === slug ? { ...node, is_pinned: nextPinned } : node
-        )
-      );
-      setDocuments((prev) =>
-        prev.map((node) =>
-          node.slug === slug ? { ...node, is_pinned: nextPinned } : node
-        )
-      );
-      await loadNav();
-    },
-    [loadNav]
-  );
-
-  const normalizeHomeSlug = useCallback((value) => {
+  const handleRemoveStartPage = useCallback(async () => {
+    await apiFetch("/api/start-page", {
+      method: "DELETE"
+    });
+    setStartPageSlug(null);
+    setBootstrapInfo(prev => ({
+      ...prev,
+      startPageSlug: ""
+    }));
+    setNavNodes(prev => prev.map(node => ({
+      ...node,
+      is_start_page: false
+    })));
+    await loadBootstrap();
+    await loadNav();
+  }, [loadBootstrap, loadNav]);
+  const handleTogglePin = useCallback(async (slug, nextPinned) => {
+    if (!slug) return;
+    const endpoint = `/api/document/pin/${encodeURIComponent(slug)}`;
+    await apiFetch(endpoint, {
+      method: nextPinned ? "PUT" : "DELETE"
+    });
+    setNavNodes(prev => prev.map(node => node.slug === slug ? {
+      ...node,
+      is_pinned: nextPinned
+    } : node));
+    setDocuments(prev => prev.map(node => node.slug === slug ? {
+      ...node,
+      is_pinned: nextPinned
+    } : node));
+    await loadNav();
+  }, [loadNav]);
+  const normalizeHomeSlug = useCallback(value => {
     if (!value) return "";
     let next = String(value).trim();
-    try {
-      next = decodeURIComponent(next);
-    } catch (err) {}
+    next = safeDecodeURIComponent(next);
     next = cleanSlug(next);
     next = next.replace(/^\/+/, "").replace(/\/+$/, "");
     if (next.endsWith("/_index")) {
@@ -1020,342 +1043,333 @@ export default function useWorkspaceSession() {
     }
     return next;
   }, []);
-
-  const collectDescendants = useCallback(
-    (rootSlug, nodes) => {
-      const byParent = new Map();
-      const bySlug = new Map();
-      (nodes || []).forEach((node) => {
-        if (!node?.slug) return;
-        const nodeSlug = normalizeHomeSlug(node.slug);
-        bySlug.set(nodeSlug, node);
-        const parentSlug = normalizeHomeSlug(
-          node.parent_slug || node.parent || ""
-        );
-        if (!parentSlug) return;
-        if (!byParent.has(parentSlug)) {
-          byParent.set(parentSlug, []);
+  const collectDescendants = useCallback((rootSlug, nodes) => {
+    const byParent = new Map();
+    const bySlug = new Map();
+    (nodes || []).forEach(node => {
+      if (!node?.slug) return;
+      const nodeSlug = normalizeHomeSlug(node.slug);
+      bySlug.set(nodeSlug, node);
+      const parentSlug = normalizeHomeSlug(node.parent_slug || node.parent || "");
+      if (!parentSlug) return;
+      if (!byParent.has(parentSlug)) {
+        byParent.set(parentSlug, []);
+      }
+      byParent.get(parentSlug).push(node);
+    });
+    const descendants = [];
+    const seen = new Set();
+    const root = normalizeHomeSlug(rootSlug);
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      const children = byParent.get(current) || [];
+      for (const child of children) {
+        if (!child?.slug) continue;
+        const childSlug = normalizeHomeSlug(child.slug);
+        if (seen.has(childSlug)) continue;
+        seen.add(childSlug);
+        descendants.push(child);
+        if (child?.is_folder) {
+          stack.push(childSlug);
         }
-        byParent.get(parentSlug).push(node);
+      }
+    }
+    if (root) {
+      const prefix = `${root}/`;
+      bySlug.forEach((node, nodeSlug) => {
+        if (seen.has(nodeSlug)) return;
+        if (!nodeSlug.startsWith(prefix)) return;
+        seen.add(nodeSlug);
+        descendants.push(node);
       });
-      const descendants = [];
-      const seen = new Set();
-      const root = normalizeHomeSlug(rootSlug);
-      const stack = [root];
-      while (stack.length > 0) {
-        const current = stack.pop();
-        const children = byParent.get(current) || [];
-        for (const child of children) {
-          if (!child?.slug) continue;
-          const childSlug = normalizeHomeSlug(child.slug);
-          if (seen.has(childSlug)) continue;
-          seen.add(childSlug);
-          descendants.push(child);
-          if (child?.is_folder) {
-            stack.push(childSlug);
-          }
-        }
-      }
-      if (root) {
-        const prefix = `${root}/`;
-        bySlug.forEach((node, nodeSlug) => {
-          if (seen.has(nodeSlug)) return;
-          if (!nodeSlug.startsWith(prefix)) return;
-          seen.add(nodeSlug);
-          descendants.push(node);
-        });
-      }
-      return descendants;
-    },
-    [normalizeHomeSlug]
-  );
-
-  const handleToggleHome = useCallback(
-    async (slug, nextHome) => {
-      if (!slug) return;
-      let descendantSlugs = null;
-      try {
-        const clean = normalizeHomeSlug(slug);
-        const normalizedStartSlug = normalizeHomeSlug(
-          normalizedStartPageSlug || ""
-        );
-        if (!nextHome && normalizedStartSlug && normalizedStartSlug === clean) {
-          setError(
-            "Set a different start page before removing the current one from Home."
-          );
-          return;
-        }
-        const endpoint = `/api/document/home/${encodeURIComponent(clean)}`;
-        await apiFetch(endpoint, { method: nextHome ? "PUT" : "DELETE" });
-        if (!nextHome) {
-          const targetNode = navNodes.find(
-            (node) => normalizeHomeSlug(node.slug) === clean
-          );
-          if (targetNode?.is_folder) {
-            descendantSlugs = new Set();
-            const descendants = collectDescendants(clean, navNodes)
-              .filter((node) => node?.slug)
-              .filter((node) => node.is_home)
-              .filter((node) => {
-                const nodeSlug = normalizeHomeSlug(node.slug);
-                if (node.is_pinned) return false;
-                if (node.is_start_page) return false;
-                if (normalizedStartSlug && nodeSlug === normalizedStartSlug)
-                  return false;
-                return true;
-              });
-            descendants.forEach((node) =>
-              descendantSlugs.add(normalizeHomeSlug(node.slug))
-            );
-          }
-        } else {
-          const targetNode = navNodes.find(
-            (node) => normalizeHomeSlug(node.slug) === clean
-          );
-          if (targetNode?.is_folder) {
-            descendantSlugs = new Set();
-            const descendants = collectDescendants(clean, navNodes).filter(
-              (node) => node?.slug
-            );
-            descendants.forEach((node) =>
-              descendantSlugs.add(normalizeHomeSlug(node.slug))
-            );
-          }
-        }
-        setNavNodes((prev) =>
-          prev.map((node) => {
-            const nodeSlug = normalizeHomeSlug(node.slug);
-            if (nodeSlug === clean) return { ...node, is_home: nextHome };
-            if (descendantSlugs?.has(nodeSlug))
-              return { ...node, is_home: nextHome };
-            return node;
-          })
-        );
-        setDocuments((prev) =>
-          prev.map((node) => {
-            const nodeSlug = normalizeHomeSlug(node.slug);
-            if (nodeSlug === clean) return { ...node, is_home: nextHome };
-            if (descendantSlugs?.has(nodeSlug))
-              return { ...node, is_home: nextHome };
-            return node;
-          })
-        );
-        if (normalizeHomeSlug(selectedDoc?.slug || "") === clean) {
-          setSelectedDoc((prev) =>
-            prev ? { ...prev, is_home: nextHome } : prev
-          );
-        } else if (
-          descendantSlugs?.has(normalizeHomeSlug(selectedDoc?.slug || ""))
-        ) {
-          setSelectedDoc((prev) =>
-            prev ? { ...prev, is_home: nextHome } : prev
-          );
-        }
-        await loadNav();
-      } catch (err) {
-        setError(err.message || "Failed to update Home");
-      }
-    },
-    [
-      collectDescendants,
-      loadNav,
-      navNodes,
-      normalizeHomeSlug,
-      normalizedStartPageSlug,
-      selectedDoc?.slug,
-    ]
-  );
-
-  const handleSetStatus = useCallback(
-    async (slug, nextStatus) => {
-      if (!slug) return;
-      const normalized = normalizeStatus(nextStatus || "");
-      if (!normalized) return;
-      try {
-        const targetNode = navNodes.find((node) => node?.slug === slug);
-        if (normalized === "unlisted" && targetNode?.is_home) {
-          await handleToggleHome(slug, false);
-        }
-        await apiFetch(ROUTES.documentStatus(slug), {
-          method: "PUT",
-          body: { status: normalized },
-        });
-        const updateStatusForSlug = (node) => {
-          if (!node?.slug) return node;
-          const isTarget =
-            node.slug === slug || node.slug.startsWith(`${slug}/`);
-          if (!isTarget) return node;
-          const nextNode = { ...node, status: normalized };
-          if (normalized === "unlisted") {
-            nextNode.is_home = false;
-          }
-          return nextNode;
-        };
-        setNavNodes((prev) => prev.map(updateStatusForSlug));
-        setDocuments((prev) => prev.map(updateStatusForSlug));
-        setSelectedDoc((prev) => {
-          if (!prev?.slug) return prev;
-          if (prev.slug !== slug) return prev;
-          const nextDoc = { ...prev, status: normalized };
-          if (normalized === "unlisted") nextDoc.is_home = false;
-          return nextDoc;
-        });
-        await loadNav();
-      } catch (err) {
-        setError(err?.message || "Failed to update status");
-      }
-    },
-    [handleToggleHome, loadNav, navNodes]
-  );
-
-  const handleSectionChange = useCallback(
-    (nextSection) => {
-      if (!nextSection) return;
-      closeEditor();
-      setSelectedDoc(null);
-      setContent("");
-      setSectionFilter(nextSection);
-    },
-    [closeEditor]
-  );
-
-  const handleDeleteDocument = useCallback(
-    async (slug) => {
-      if (!slug) return;
-      const clean = cleanSlug(slug);
-      const isDraft =
-        (selectedDoc?.slug === clean &&
-          normalizeStatus((selectedDoc?.status || "").toLowerCase()) ===
-            "draft") ||
-        draftNodes.some((node) => cleanSlug(node?.slug || "") === clean);
-      if (!canAdmin && !isDraft) {
-        setError("Admin or Owner permissions required to delete.");
+    }
+    return descendants;
+  }, [normalizeHomeSlug]);
+  const handleToggleHome = useCallback(async (slug, nextHome) => {
+    if (!slug) return;
+    let descendantSlugs = null;
+    try {
+      const clean = normalizeHomeSlug(slug);
+      const normalizedStartSlug = normalizeHomeSlug(normalizedStartPageSlug || "");
+      if (!nextHome && normalizedStartSlug && normalizedStartSlug === clean) {
+        setError("Set a different start page before removing the current one from Home.");
         return;
       }
-      if (!isDraft && normalizedStartPageSlug && normalizedStartPageSlug === clean) {
-        setError(
-          "Cannot delete the active start page. Choose a different start page first."
-        );
-        return;
-      }
-      const ok = window.confirm(
-        isDraft
-          ? "This will permanently delete this draft. This cannot be undone."
-          : "This will permanently delete this item from the library. This cannot be undone."
-      );
-      if (!ok) return;
-      const endpoint = isDraft
-        ? ROUTES.draft(encodeURIComponent(clean))
-        : `/api/document/${encodeURIComponent(clean)}`;
-      await apiFetch(endpoint, { method: "DELETE" });
-      if (selectedDoc?.slug === clean) {
-        setSelectedDoc(null);
-        setContent("");
-      }
-      if (isDraft) {
-        await loadDrafts();
+      const endpoint = `/api/document/home/${encodeURIComponent(clean)}`;
+      await apiFetch(endpoint, {
+        method: nextHome ? "PUT" : "DELETE"
+      });
+      if (!nextHome) {
+        const targetNode = navNodes.find(node => normalizeHomeSlug(node.slug) === clean);
+        if (targetNode?.is_folder) {
+          descendantSlugs = new Set();
+          const descendants = collectDescendants(clean, navNodes).filter(node => node?.slug).filter(node => node.is_home).filter(node => {
+            const nodeSlug = normalizeHomeSlug(node.slug);
+            if (node.is_pinned) return false;
+            if (node.is_start_page) return false;
+            if (normalizedStartSlug && nodeSlug === normalizedStartSlug) return false;
+            return true;
+          });
+          descendants.forEach(node => descendantSlugs.add(normalizeHomeSlug(node.slug)));
+        }
       } else {
-        await loadNav();
+        const targetNode = navNodes.find(node => normalizeHomeSlug(node.slug) === clean);
+        if (targetNode?.is_folder) {
+          descendantSlugs = new Set();
+          const descendants = collectDescendants(clean, navNodes).filter(node => node?.slug);
+          descendants.forEach(node => descendantSlugs.add(normalizeHomeSlug(node.slug)));
+        }
       }
-    },
-    [
-      canAdmin,
-      draftNodes,
-      loadDrafts,
-      loadNav,
-      normalizedStartPageSlug,
-      selectedDoc?.slug,
-      selectedDoc?.status,
-    ]
-  );
-
+      setNavNodes(prev => prev.map(node => {
+        const nodeSlug = normalizeHomeSlug(node.slug);
+        if (nodeSlug === clean) return {
+          ...node,
+          is_home: nextHome
+        };
+        if (descendantSlugs?.has(nodeSlug)) return {
+          ...node,
+          is_home: nextHome
+        };
+        return node;
+      }));
+      setDocuments(prev => prev.map(node => {
+        const nodeSlug = normalizeHomeSlug(node.slug);
+        if (nodeSlug === clean) return {
+          ...node,
+          is_home: nextHome
+        };
+        if (descendantSlugs?.has(nodeSlug)) return {
+          ...node,
+          is_home: nextHome
+        };
+        return node;
+      }));
+      if (normalizeHomeSlug(selectedDoc?.slug || "") === clean) {
+        setSelectedDoc(prev => prev ? {
+          ...prev,
+          is_home: nextHome
+        } : prev);
+      } else if (descendantSlugs?.has(normalizeHomeSlug(selectedDoc?.slug || ""))) {
+        setSelectedDoc(prev => prev ? {
+          ...prev,
+          is_home: nextHome
+        } : prev);
+      }
+      await loadNav();
+    } catch (err) {
+      setError(err.message || "Failed to update Home");
+    }
+  }, [collectDescendants, loadNav, navNodes, normalizeHomeSlug, normalizedStartPageSlug, selectedDoc?.slug]);
+  const handleSetStatus = useCallback(async (slug, nextStatus) => {
+    if (!slug) return;
+    const normalized = normalizeStatus(nextStatus || "");
+    if (!normalized) return;
+    try {
+      const targetNode = navNodes.find(node => node?.slug === slug);
+      const touchesStartPage = normalized === "unlisted" && navNodes.some(node => node?.is_start_page && (node.slug === slug || node.slug.startsWith(`${slug}/`)));
+      if (touchesStartPage) {
+        setError("Set a different start page before moving this item to Unlisted.");
+        return;
+      }
+      if (normalized === "unlisted" && targetNode?.is_home) {
+        await handleToggleHome(slug, false);
+      }
+      await apiFetch(ROUTES.documentStatus(slug), {
+        method: "PUT",
+        body: {
+          status: normalized
+        }
+      });
+      const updateStatusForSlug = node => {
+        if (!node?.slug) return node;
+        const isTarget = node.slug === slug || node.slug.startsWith(`${slug}/`);
+        if (!isTarget) return node;
+        const nextNode = {
+          ...node,
+          status: normalized
+        };
+        if (normalized === "unlisted") {
+          nextNode.is_home = false;
+        }
+        return nextNode;
+      };
+      setNavNodes(prev => prev.map(updateStatusForSlug));
+      setDocuments(prev => prev.map(updateStatusForSlug));
+      setSelectedDoc(prev => {
+        if (!prev?.slug) return prev;
+        if (prev.slug !== slug) return prev;
+        const nextDoc = {
+          ...prev,
+          status: normalized
+        };
+        if (normalized === "unlisted") nextDoc.is_home = false;
+        return nextDoc;
+      });
+      await loadNav();
+    } catch (err) {
+      setError(err?.message || "Failed to update status");
+    }
+  }, [handleToggleHome, loadNav, navNodes]);
+  const handleSectionChange = useCallback(nextSection => {
+    if (!nextSection || nextSection === sectionFilter) return;
+    pendingSectionSelectionRef.current = "section";
+    closeEditor();
+    setSectionFilter(nextSection);
+  }, [closeEditor, sectionFilter]);
+  const handleDeleteDocument = useCallback(async slug => {
+    if (!slug) return;
+    const clean = cleanSlug(slug);
+    const isDraft = selectedDoc?.slug === clean && normalizeStatus((selectedDoc?.status || "").toLowerCase()) === "draft" || draftNodes.some(node => cleanSlug(node?.slug || "") === clean);
+    if (!canAdmin && !isDraft) {
+      setError("Admin or Owner permissions required to delete.");
+      return;
+    }
+    if (!isDraft && normalizedStartPageSlug && normalizedStartPageSlug === clean) {
+      setError("Cannot delete the active start page. Choose a different start page first.");
+      return;
+    }
+    const ok = window.confirm(isDraft ? "This will permanently delete this draft. This cannot be undone." : "This will permanently delete this item from the library. This cannot be undone.");
+    if (!ok) return;
+    const endpoint = isDraft ? ROUTES.draft(encodeURIComponent(clean)) : `/api/document/${encodeURIComponent(clean)}`;
+    await apiFetch(endpoint, {
+      method: "DELETE"
+    });
+    if (selectedDoc?.slug === clean) {
+      clearActiveDocument();
+    }
+    if (isDraft) {
+      await loadDrafts();
+    } else {
+      await loadNav();
+    }
+  }, [canAdmin, draftNodes, loadDrafts, loadNav, normalizedStartPageSlug, clearActiveDocument, selectedDoc?.slug, selectedDoc?.status]);
   const handleLogout = async () => {
     try {
-      await apiFetch("/api/logout", { method: "POST" });
+      await apiFetch(ROUTES.logout, {
+        method: "POST"
+      });
     } catch (err) {
       setError(err.message || "Sign out failed");
       return;
     }
     setUser(null);
-    setSelectedDoc(null);
-    setContent("");
-    setDocuments([]);
-    setNavNodes([]);
+    resetWorkspaceData();
   };
-
+  const handleOpenSettings = useCallback(() => {
+    cancelPendingEditorTransition();
+    setShowSettings(true);
+  }, [cancelPendingEditorTransition]);
+  const handleGoHome = useCallback(() => {
+    closeEditor();
+    setShowSettings(false);
+    setShowNewModal(false);
+    setShowFolderPrompt(false);
+    setShowAboutModal(false);
+    setShowReaderModal(false);
+    setShowHistoryDiff(false);
+    setHistoryDiffData(null);
+    setHistoryDiffError(null);
+    setHistoryDiffLoading(false);
+    setHistoryDiffEntryId(null);
+    setSearch("");
+    if (typeof window !== "undefined") {
+      const current = window.location.pathname + window.location.search;
+      if (current !== "/") {
+        navigate("/", {
+          state: {}
+        });
+      }
+    }
+    if (sectionFilter !== DEFAULT_SECTION_FILTER) {
+      pendingSectionSelectionRef.current = "section";
+      setSectionFilter(DEFAULT_SECTION_FILTER);
+      return;
+    }
+    if (!selectedDoc?.slug || !selectedDocVisibleInSection) {
+      selectSectionDocument(sectionSelectionSlug, {
+        syncLocation: false
+      });
+      return;
+    }
+    expandParentsForVisibleSlug(selectedDoc.slug);
+  }, [closeEditor, expandParentsForVisibleSlug, sectionFilter, sectionSelectionSlug, selectSectionDocument, selectedDoc?.slug, selectedDocVisibleInSection]);
   const handleNukeWorkspace = useCallback(async () => {
-    if (
-      !window.confirm(
-        "This will delete the entire database, wipe every Markdown document, remove uploaded images, clear backups, and reset config metadata. Continue?"
-      )
-    ) {
+    if (!window.confirm("This will delete the entire database, wipe every Markdown document, remove uploaded images, clear backups, and reset config metadata. Continue?")) {
       return;
     }
     try {
-      await apiFetch("/api/nuke", { method: "POST" });
-      try {
-        setSelectedDoc(null);
-        setContent("");
-        setDocuments([]);
-        setNavNodes([]);
-        setSearch("");
-        setSectionFilter(DEFAULT_SECTION_FILTER);
-        setHistoryEntries([]);
-        setStartPageSlug(null);
-        setShowEditor(false);
-        setEditing(false);
-        setShowSettings(false);
-      } catch (e) {}
-      try {
-        navigate("/", { replace: true });
-        if (
-          typeof window !== "undefined" &&
-          window.history &&
-          window.history.replaceState
-        ) {
-          window.history.replaceState({}, "", "/");
-        }
-      } catch (e) {}
+      await apiFetch(ROUTES.nuke, {
+        method: "POST"
+      });
+      resetWorkspaceData();
+      setSearch("");
+      setSectionFilter(DEFAULT_SECTION_FILTER);
+      setShowEditor(false);
+      setEditing(false);
+      setShowSettings(false);
+      navigate("/", {
+        replace: true
+      });
+      if (typeof window !== "undefined" && window.history && window.history.replaceState) {
+        window.history.replaceState({}, "", "/");
+      }
       alert("Workspace wiped. Reloading...");
       window.location.reload();
     } catch (err) {
       setError(err.message || "Nuke failed");
     }
-  }, []);
-
+  }, [resetWorkspaceData]);
   useEffect(() => {
     let mounted = true;
-    apiFetch("/api/me")
-      .then((data) => {
-        if (!mounted) return;
-        if (!data) {
-          setUser(null);
-          return;
-        }
-        setUser(data);
-      })
-      .catch(() => {
-        if (mounted) {
-          setUser(null);
-        }
-      });
+    apiFetch(ROUTES.me).then(data => {
+      if (!mounted) return;
+      if (!data) {
+        setUser(null);
+        return;
+      }
+      setUser(data);
+    }).catch(() => {
+      if (mounted) {
+        setUser(null);
+      }
+    });
     return () => {
       mounted = false;
     };
   }, []);
-
+  useEffect(() => {
+    pendingSectionSelectionRef.current = "initial";
+  }, [user?.username]);
   useEffect(() => {
     loadBootstrap();
   }, [loadBootstrap]);
-
   useEffect(() => {
+    if (!user || !bootstrapReady) return;
+    if (bootstrapInfo.fresh && !onboardingComplete) return;
+    let timeoutId = null;
+    const warmEditor = () => {
+      preloadEditor().catch(err => {
+        console.warn("[workspace] warm editor", err);
+      });
+    };
+    timeoutId = window.setTimeout(warmEditor, 0);
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [bootstrapInfo.fresh, bootstrapReady, onboardingComplete, user]);
+  useEffect(() => {
+    if (initialLocationHandledRef.current) return;
+    initialLocationHandledRef.current = true;
     if (typeof window === "undefined") return;
-    const { q, section } = parseSearchParams(
-      window.location.search || ""
-    );
+    const {
+      q,
+      section
+    } = parseSearchParams(window.location.search || "");
     if (typeof q === "string" && q !== "") setSearch(q);
     if (section) setSectionFilter(section);
-
     const route = parseLocation(window.location);
     switch (route.type) {
       case "welcome":
@@ -1376,36 +1390,22 @@ export default function useWorkspaceSession() {
         return;
       case "about":
         if (route.slug) {
-          openDocument(route.slug)
-            .then(() => setShowAboutModal(true))
-            .catch((err) => console.warn("[workspace] open about", err));
+          openAboutRoute(route.slug);
         }
         return;
       case "reader":
         if (route.slug) {
-          openDocument(route.slug)
-            .then(() => setShowReaderModal(true))
-            .catch((err) => console.warn("[workspace] open reader", err));
+          openReaderRoute(route.slug);
         }
         return;
       case "history":
         if (route.slug) {
-          openDocument(route.slug)
-            .then(() => {
-              setShowHistoryDiff(true);
-            })
-            .catch((err) => console.warn("[workspace] open history diff", err));
+          openHistoryRoute(route.slug, route.id);
         }
         return;
       case "edit":
         if (route.slug) {
-          openDocument(route.slug)
-            .then(() => {
-              setEditorMode("edit");
-              setShowEditor(true);
-              setEditing(true);
-            })
-            .catch((err) => console.warn("[workspace] open edit", err));
+          openEditRoute(route.slug);
         }
         return;
       case "doc":
@@ -1413,32 +1413,35 @@ export default function useWorkspaceSession() {
           openDocument(route.slug);
           if (route.canonicalize) {
             try {
-              navigate(slugToPath(route.slug), { replace: true, state: {} });
+              const canonicalPath = `${slugToPath(route.slug)}${window.location.search || ""}`;
+              navigate(canonicalPath, {
+                replace: true,
+                state: {}
+              });
             } catch (e) {
               console.warn("[workspace] canonicalize nav", e);
             }
           }
         }
         return;
+      case "root":
+        if (!section) {
+          setSectionFilter(DEFAULT_SECTION_FILTER);
+        }
+        return;
       default:
         return;
     }
-  }, [openDocument, openNewEditor]);
-
+  }, [openAboutRoute, openDocument, openEditRoute, openHistoryRoute, openNewEditor, openReaderRoute]);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onPop = (ev) => {
-      const state = ev.state || {};
-      if (state && state.slug) {
-        openDocument(state.slug);
-        return;
-      }
-      const { q, section } = parseSearchParams(
-        window.location.search || ""
-      );
+    const onPop = () => {
+      const {
+        q,
+        section
+      } = parseSearchParams(window.location.search || "");
       if (typeof q === "string") setSearch(q);
       if (section) setSectionFilter(section);
-
       const route = parseLocation(window.location);
       switch (route.type) {
         case "welcome":
@@ -1452,37 +1455,25 @@ export default function useWorkspaceSession() {
           return;
         case "doc":
           if (route.slug) {
-            openDocument(route.slug).catch((err) =>
-              console.warn("[workspace] pop doc", err)
-            );
+            openDocument(route.slug).catch(err => console.warn("[workspace] pop doc", err));
             return;
           }
           break;
         case "about":
           if (route.slug) {
-            openDocument(route.slug)
-              .then(() => setShowAboutModal(true))
-              .catch((err) => console.warn("[workspace] pop about", err));
+            openAboutRoute(route.slug);
             return;
           }
           break;
         case "reader":
           if (route.slug) {
-            openDocument(route.slug)
-              .then(() => setShowReaderModal(true))
-              .catch((err) => console.warn("[workspace] pop reader", err));
+            openReaderRoute(route.slug);
             return;
           }
           break;
         case "history":
           if (route.slug) {
-            openDocument(route.slug)
-              .then(() => {
-                setShowHistoryDiff(true);
-              })
-              .catch((err) =>
-                console.warn("[workspace] pop history diff", err)
-              );
+            openHistoryRoute(route.slug, route.id);
             return;
           }
           break;
@@ -1490,125 +1481,142 @@ export default function useWorkspaceSession() {
           setSettingsCategory(route.category || "account");
           setShowSettings(true);
           return;
-        case "new":
         case "newFolder":
           setShowFolderPrompt(true);
           return;
         case "edit":
           if (route.slug) {
-            openDocument(route.slug)
-              .then(() => {
-                setEditorMode("edit");
-                setShowEditor(true);
-                setEditing(true);
-              })
-              .catch((err) => console.warn("[workspace] pop edit", err));
+            openEditRoute(route.slug);
             return;
           }
           break;
+        case "root":
+          setShowSettings(false);
+          setShowNewModal(false);
+          setShowFolderPrompt(false);
+          setShowEditor(false);
+          setShowAboutModal(false);
+          setShowReaderModal(false);
+          setShowHistoryDiff(false);
+          if (!section) {
+            if (sectionFilter !== DEFAULT_SECTION_FILTER) {
+              pendingSectionSelectionRef.current = "section";
+              setSectionFilter(DEFAULT_SECTION_FILTER);
+              return;
+            }
+            if (!selectedDoc?.slug || !selectedDocVisibleInSection) {
+              selectSectionDocument(sectionSelectionSlug, {
+                syncLocation: false
+              });
+              return;
+            }
+          }
+          return;
         default:
           setShowSettings(false);
           setShowNewModal(false);
           setShowFolderPrompt(false);
           setShowEditor(false);
-          setSelectedDoc(null);
-          setContent("");
+          clearActiveDocument();
           return;
       }
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [openDocument, openNewEditor]);
-
+  }, [clearActiveDocument, openAboutRoute, openDocument, openEditRoute, openHistoryRoute, openNewEditor, openReaderRoute, sectionFilter, sectionSelectionSlug, selectSectionDocument, selectedDoc?.slug, selectedDocVisibleInSection]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!bootstrapReady || !bootstrapInfo.fresh || onboardingComplete) return;
-    const desired =
-      onboardingStep === "welcome"
-        ? "/welcome"
-        : onboardingStep === "setup"
-        ? "/setup"
-        : "/";
+    const desired = onboardingStep === "welcome" ? "/welcome" : onboardingStep === "setup" ? "/setup" : "/";
     if (window.location.pathname !== desired) {
       try {
-        navigate(desired, { state: {} });
+        navigate(desired, {
+          state: {}
+        });
       } catch (e) {
         console.warn("[workspace] onboarding URL sync", e);
       }
     }
   }, [onboardingStep, bootstrapReady, bootstrapInfo.fresh, onboardingComplete]);
-
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const includeSection =
-      sectionFilter && sectionFilter !== DEFAULT_SECTION_FILTER;
-    const searchStr = buildSearchString({
-      q: search || "",
-      section: includeSection ? sectionFilter : "",
-    });
+    const includeSection = sectionFilter && sectionFilter !== DEFAULT_SECTION_FILTER;
     const pathname = window.location.pathname || "/";
-    const full = `${pathname}${searchStr}`;
+    const params = new URLSearchParams();
+    if (search) params.set("q", search);
+    if (includeSection) params.set("section", sectionFilter);
+    if (pathname.startsWith("/history/")) {
+      const currentParams = new URLSearchParams(window.location.search || "");
+      const historyId = historyDiffEntryId || currentParams.get("id") || "";
+      if (historyId) {
+        params.set("id", historyId);
+      }
+    }
+    const nextSearch = params.toString();
+    const full = nextSearch ? `${pathname}?${nextSearch}` : pathname;
     try {
       const current = window.location.pathname + window.location.search;
       if (current !== full) {
-        navigate(full, { replace: true, state: {} });
+        navigate(full, {
+          replace: true,
+          state: {}
+        });
       }
     } catch (e) {
       console.warn("[workspace] push filters to URL", e);
     }
-  }, [search, sectionFilter, draftNodes]);
-
+  }, [historyDiffEntryId, search, sectionFilter]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       if (showSettings) {
         const cat = settingsCategory || "account";
         const path = cat ? `/settings/${cat}` : "/settings";
-        if (window.location.pathname !== path)
-          navigate(path, { state: { panel: "settings", cat } });
+        if (window.location.pathname !== path) navigate(path, {
+          state: {
+            panel: "settings",
+            cat
+          }
+        });
       } else if (window.location.pathname.startsWith("/settings")) {
-        navigate("/", { state: {} });
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync settings URL", e);
     }
-  }, [showSettings, settingsCategory]);
-
+  }, [navigateToContextPath, settingsCategory, showSettings]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       if (showNewModal) {
-        if (window.location.pathname !== "/new")
-          navigate("/new", { state: { panel: "new" } });
-      } else if (
-        window.location.pathname === "/new" &&
-        !showEditor &&
-        !showFolderPrompt
-      ) {
-        navigate("/", { state: {} });
+        if (window.location.pathname !== "/new") navigate("/new", {
+          state: {
+            panel: "new"
+          }
+        });
+      } else if (window.location.pathname === "/new" && !showEditor && !showFolderPrompt) {
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync new modal URL", e);
     }
-  }, [showNewModal, showEditor, showFolderPrompt]);
-
+  }, [navigateToContextPath, showNewModal, showEditor, showFolderPrompt]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       if (showFolderPrompt) {
-        if (window.location.pathname !== "/new/folder")
-          navigate("/new/folder", { state: { panel: "new-folder" } });
-      } else if (
-        window.location.pathname === "/new/folder" ||
-        window.location.pathname === "/new-folder"
-      ) {
-        navigate("/", { state: {} });
+        if (window.location.pathname !== "/new/folder") navigate("/new/folder", {
+          state: {
+            panel: "new-folder"
+          }
+        });
+      } else if (window.location.pathname === "/new/folder" || window.location.pathname === "/new-folder") {
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync folder prompt URL", e);
     }
-  }, [showFolderPrompt]);
-
+  }, [navigateToContextPath, showFolderPrompt]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -1619,57 +1627,65 @@ export default function useWorkspaceSession() {
           const full = `${path}${search}`;
           if (window.location.pathname + window.location.search !== full) {
             navigate(full, {
-              state: { editor: "edit", slug: selectedDoc.slug },
+              state: {
+                editor: "edit",
+                slug: selectedDoc.slug
+              }
             });
           }
         } else {
-          if (window.location.pathname !== "/editor/new")
-            navigate("/editor/new", { state: { editor: "new" } });
+          if (window.location.pathname !== "/editor/new") navigate("/editor/new", {
+            state: {
+              editor: "new"
+            }
+          });
         }
-      } else if (
-        window.location.pathname.startsWith("/edit") ||
-        window.location.pathname === "/editor/new" ||
-        window.location.pathname === "/new"
-      ) {
-        navigate("/", { state: {} });
+      } else if (window.location.pathname.startsWith("/edit") || window.location.pathname === "/editor/new" || window.location.pathname === "/new") {
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync editor URL", e);
     }
-  }, [showEditor, editorMode, selectedDoc?.slug]);
-
+  }, [editorMode, navigateToContextPath, selectedDoc?.slug, showEditor]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
+      if (showHistoryDiff) {
+        return;
+      }
       if (showAboutModal && selectedDoc?.slug) {
         const path = `/about/${slugToSegments(selectedDoc.slug)}`;
-        if (window.location.pathname !== path)
-          navigate(path, { state: { panel: "about", slug: selectedDoc.slug } });
+        if (window.location.pathname !== path) navigate(path, {
+          state: {
+            panel: "about",
+            slug: selectedDoc.slug
+          }
+        });
       } else if (window.location.pathname.startsWith("/about")) {
-        navigate("/", { state: {} });
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync about URL", e);
     }
-  }, [showAboutModal, selectedDoc?.slug]);
-
+  }, [navigateToContextPath, selectedDoc?.slug, showAboutModal, showHistoryDiff]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       if (showReaderModal && selectedDoc?.slug) {
         const path = `/reader/${slugToSegments(selectedDoc.slug)}`;
-        if (window.location.pathname !== path)
-          navigate(path, {
-            state: { panel: "reader", slug: selectedDoc.slug },
-          });
+        if (window.location.pathname !== path) navigate(path, {
+          state: {
+            panel: "reader",
+            slug: selectedDoc.slug
+          }
+        });
       } else if (window.location.pathname.startsWith("/reader")) {
-        navigate("/", { state: {} });
+        navigateToContextPath();
       }
     } catch (e) {
       console.warn("[workspace] sync reader URL", e);
     }
-  }, [showReaderModal, selectedDoc?.slug]);
-
+  }, [navigateToContextPath, selectedDoc?.slug, showReaderModal]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -1677,40 +1693,43 @@ export default function useWorkspaceSession() {
         const id = historyDiffEntryId || "";
         const path = `/history/${slugToSegments(selectedDoc.slug)}`;
         const full = id ? `${path}?id=${encodeURIComponent(id)}` : path;
-        if (window.location.pathname + window.location.search !== full)
-          navigate(full, {
-            state: { panel: "history", slug: selectedDoc.slug, id },
-          });
+        if (window.location.pathname + window.location.search !== full) navigate(full, {
+          state: {
+            panel: "history",
+            slug: selectedDoc.slug,
+            id
+          }
+        });
       } else if (window.location.pathname.startsWith("/history")) {
-        navigate("/", { state: {} });
+        if (showAboutModal && selectedDoc?.slug) {
+          navigate(`/about/${slugToSegments(selectedDoc.slug)}${contextualSearch}`, {
+            replace: true,
+            state: {
+              panel: "about",
+              slug: selectedDoc.slug
+            }
+          });
+        } else {
+          navigateToContextPath();
+        }
       }
     } catch (e) {
       console.warn("[workspace] sync history URL", e);
     }
-  }, [showHistoryDiff, selectedDoc?.slug, historyDiffEntryId]);
-
+  }, [contextualSearch, historyDiffEntryId, navigateToContextPath, selectedDoc?.slug, showAboutModal, showHistoryDiff]);
   useEffect(() => {
     if (user && (!bootstrapInfo.fresh || onboardingComplete)) {
       loadNav();
     }
   }, [user, bootstrapInfo.fresh, onboardingComplete, loadNav]);
-
   useEffect(() => {
-    if (!user || (bootstrapInfo.fresh && !onboardingComplete)) return;
+    if (!user || bootstrapInfo.fresh && !onboardingComplete) return;
     if (sectionFilter === "drafts") {
       loadDrafts();
     } else {
       loadNav();
     }
-  }, [
-    sectionFilter,
-    user,
-    bootstrapInfo.fresh,
-    onboardingComplete,
-    loadNav,
-    loadDrafts,
-  ]);
-
+  }, [sectionFilter, user, bootstrapInfo.fresh, onboardingComplete, loadNav, loadDrafts]);
   useEffect(() => {
     setHistoryEntries([]);
     setHistoryDiffData(null);
@@ -1721,7 +1740,6 @@ export default function useWorkspaceSession() {
     setHistoryRestoreError(null);
     loadHistory();
   }, [loadHistory]);
-
   useEffect(() => {
     if (searchTimerRef.current) {
       clearTimeout(searchTimerRef.current);
@@ -1740,7 +1758,7 @@ export default function useWorkspaceSession() {
     }
     if (sectionFilter === "drafts") {
       const q = trimmed.toLowerCase();
-      const list = (draftNodes || []).filter((item) => {
+      const list = (draftNodes || []).filter(item => {
         const title = (item?.title || "").toLowerCase();
         const slug = (item?.slug || "").toLowerCase();
         return title.includes(q) || slug.includes(q);
@@ -1758,38 +1776,25 @@ export default function useWorkspaceSession() {
       params.set("q", trimmed);
       params.set("field", "title");
       params.set("limit", "50");
-      const statuses =
-        sectionFilter === "unlisted"
-          ? ["unlisted"]
-          : sectionFilter === "drafts"
-          ? ["draft"]
-          : ["published"];
+      const statuses = sectionFilter === "unlisted" ? ["unlisted"] : sectionFilter === "drafts" ? ["draft"] : ["published"];
       if (statuses.length) params.set("status", statuses.join(","));
       apiFetch(`/api/documents/search?${params.toString()}`, {
-        signal: controller.signal,
-      })
-        .then((data) => {
-          const list = Array.isArray(data) ? data : [];
-          const next =
-            sectionFilter === "home"
-              ? list.filter((item) => item?.is_home)
-              : sectionFilter === "library"
-              ? list
-              : list;
-          setSearchResults(next);
-          setSearchError(null);
-        })
-        .catch((err) => {
-          if (err.name === "AbortError") return;
-          setSearchResults([]);
-          setSearchError(err.message || "Search failed");
-        })
-        .finally(() => {
-          if (searchAbortRef.current === controller) {
-            searchAbortRef.current = null;
-            setSearchLoading(false);
-          }
-        });
+        signal: controller.signal
+      }).then(data => {
+        const list = Array.isArray(data) ? data : [];
+        const next = sectionFilter === "home" ? list.filter(item => item?.is_home) : sectionFilter === "library" ? list : list;
+        setSearchResults(next);
+        setSearchError(null);
+      }).catch(err => {
+        if (err.name === "AbortError") return;
+        setSearchResults([]);
+        setSearchError(err.message || "Search failed");
+      }).finally(() => {
+        if (searchAbortRef.current === controller) {
+          searchAbortRef.current = null;
+          setSearchLoading(false);
+        }
+      });
     }, 350);
     return () => {
       if (searchTimerRef.current) {
@@ -1801,19 +1806,16 @@ export default function useWorkspaceSession() {
         searchAbortRef.current = null;
       }
     };
-  }, [search, sectionFilter]);
-
+  }, [draftNodes, search, sectionFilter]);
   useEffect(() => {
     const container = previewRef.current;
     if (!container) return;
-    const nodes = Array.from(
-      container.querySelectorAll(".md-embed[data-embed-slug]")
-    );
+    const nodes = Array.from(container.querySelectorAll(".md-embed[data-embed-slug]"));
     if (nodes.length === 0) return;
-    embedControllersRef.current.forEach((ctrl) => ctrl.abort());
-    embedControllersRef.current.clear();
-
-    nodes.forEach((node) => {
+    const embedControllers = embedControllersRef.current;
+    embedControllers.forEach(ctrl => ctrl.abort());
+    embedControllers.clear();
+    nodes.forEach(node => {
       const slugAttr = node.dataset.embedSlug;
       if (!slugAttr) return;
       const slug = decodeSlug(slugAttr);
@@ -1825,105 +1827,96 @@ export default function useWorkspaceSession() {
         node.classList.add("md-embed--loaded");
         return;
       }
-      if (embedControllersRef.current.has(key)) return;
+      if (embedControllers.has(key)) return;
       const controller = new AbortController();
-      embedControllersRef.current.set(key, controller);
+      embedControllers.set(key, controller);
       apiFetch(`/api/document/${encodeURIComponent(slug)}`, {
-        signal: controller.signal,
-      })
-        .then((data) => {
-          if (controller.signal.aborted) return;
-          const body = fragment
-            ? extractSection(data.content || "", fragment)
-            : data.content || "";
-          const panelHtml = `
+        signal: controller.signal
+      }).then(data => {
+        if (controller.signal.aborted) return;
+        const body = fragment ? extractSection(data.content || "", fragment) : data.content || "";
+        const panelHtml = `
             <div class="md-embed-panel">
-              <div class="md-embed-panel-title">${escapeHtml(
-                data.title || data.slug || slug
-              )}</div>
-              <div class="md-embed-panel-meta">${escapeHtml(
-                normalizeStatus((data.status || "").toLowerCase())
-              )}</div>
-              <div class="md-embed-panel-body">${renderMarkdown(
-                body || " ",
-                markdownResolver
-              )}</div>
+              <div class="md-embed-panel-title">${escapeHtml(data.title || data.slug || slug)}</div>
+              <div class="md-embed-panel-meta">${escapeHtml(normalizeStatus((data.status || "").toLowerCase()))}</div>
+              <div class="md-embed-panel-body">${renderMarkdown(body || " ", markdownResolver)}</div>
             </div>`;
-          embedCacheRef.current.set(key, panelHtml);
-          node.innerHTML = panelHtml;
-          node.classList.add("md-embed--loaded");
-        })
-        .catch((err) => {
-          if (controller.signal.aborted) return;
-          node.classList.add("md-embed--error");
-          node.innerHTML = `<span class="md-embed-error">${escapeHtml(
-            err.message || "Unable to load embed"
-          )}</span>`;
-        })
-        .finally(() => {
-          embedControllersRef.current.delete(key);
-        });
+        embedCacheRef.current.set(key, panelHtml);
+        node.innerHTML = panelHtml;
+        node.classList.add("md-embed--loaded");
+      }).catch(err => {
+        if (controller.signal.aborted) return;
+        node.classList.add("md-embed--error");
+        node.innerHTML = `<span class="md-embed-error">${escapeHtml(err.message || "Unable to load embed")}</span>`;
+      }).finally(() => {
+        embedControllers.delete(key);
+      });
     });
-
     return () => {
-      embedControllersRef.current.forEach((ctrl) => ctrl.abort());
-      embedControllersRef.current.clear();
+      embedControllers.forEach(ctrl => ctrl.abort());
+      embedControllers.clear();
     };
   }, [content, markdownResolver]);
-
   useEffect(() => {
-    if (selectedDoc || navNodes.length === 0) return;
-    const slug = startPageSlug || navNodes[0]?.slug;
-    if (slug) {
-      openDocument(slug);
+    const sectionReady = sectionFilter === "drafts" ? draftsLoaded : navLoaded;
+    const keepRootPath = typeof window !== "undefined" && window.location.pathname === "/";
+    if (!pendingSectionSelectionRef.current) return;
+    if (!user || !bootstrapReady) return;
+    if (bootstrapInfo.fresh && !onboardingComplete) return;
+    if (!sectionReady) return;
+    if (pendingSectionSelectionRef.current === "initial" && selectedDoc?.slug) {
+      pendingSectionSelectionRef.current = false;
+      return;
     }
-  }, [startPageSlug, navNodes, selectedDoc]);
-
+    if (pendingSectionSelectionRef.current === "section" && selectedDoc?.slug && selectedDocVisibleInSection) {
+      pendingSectionSelectionRef.current = false;
+      expandParentsForVisibleSlug(selectedDoc.slug);
+      return;
+    }
+    pendingSectionSelectionRef.current = false;
+    if (!sectionSelectionSlug) {
+      clearActiveDocument();
+      navigateToContextPath("");
+      return;
+    }
+    selectSectionDocument(sectionSelectionSlug, {
+      syncLocation: !keepRootPath
+    });
+  }, [bootstrapInfo.fresh, bootstrapReady, clearActiveDocument, draftsLoaded, expandParentsForVisibleSlug, navigateToContextPath, navLoaded, onboardingComplete, sectionSelectionSlug, sectionFilter, selectSectionDocument, selectedDoc?.slug, selectedDocVisibleInSection, user]);
   useEffect(() => {
-    if (!selectedDoc) return;
-    const nodeStatus = normalizeStatus((selectedDoc.status || "").toLowerCase());
-    if (sectionFilter === "unlisted" && nodeStatus === "unlisted") return;
-    if (sectionFilter === "drafts" && nodeStatus === "draft") return;
-    if (nodeStatus !== "unlisted" && nodeStatus !== "draft") return;
-    closeEditor();
-    setSelectedDoc(null);
-    setContent("");
-    try {
-      if (typeof window !== "undefined") {
-        navigate("/", { state: {} });
-      }
-    } catch (e) {
-      console.warn("[workspace] navigate root", e);
-    }
-  }, [closeEditor, sectionFilter, selectedDoc]);
-
+    const sectionReady = sectionFilter === "drafts" ? draftsLoaded : navLoaded;
+    const keepRootPath = typeof window !== "undefined" && window.location.pathname === "/";
+    if (!user || !bootstrapReady) return;
+    if (bootstrapInfo.fresh && !onboardingComplete) return;
+    if (!sectionReady || showEditor || loadingDoc) return;
+    if (selectedDoc?.slug || !sectionSelectionSlug) return;
+    selectSectionDocument(sectionSelectionSlug, {
+      syncLocation: !keepRootPath
+    });
+  }, [bootstrapInfo.fresh, bootstrapReady, draftsLoaded, loadingDoc, navLoaded, onboardingComplete, sectionSelectionSlug, sectionFilter, selectSectionDocument, selectedDoc?.slug, showEditor, user]);
   const handleOnboardingComplete = useCallback(() => {
     setOnboardingComplete(true);
+    setOnboardingStep("splash");
+    if (typeof window !== "undefined") {
+      try {
+        navigate("/", {
+          replace: true,
+          state: {}
+        });
+      } catch (err) {
+        console.warn("[workspace] onboarding complete nav", err);
+      }
+    }
     loadBootstrap();
   }, [loadBootstrap]);
-
-  const previewContent = loadingDoc ? (
-    <div className="muted">Loading document...</div>
-  ) : selectedDoc ? (
-    <div
-      className="markdown-view"
-      ref={previewRef}
-      onClick={handleMarkdownLinkClick}
-      dangerouslySetInnerHTML={{
-        __html: renderMarkdown(content, markdownResolver),
-      }}
-    />
-  ) : (
-    <div className="empty">
+  const previewContent = selectedDoc ? <div className={`markdown-view${loadingDoc ? " markdown-view-loading" : ""}`} aria-busy={loadingDoc} ref={previewRef} onClick={handleMarkdownLinkClick} dangerouslySetInnerHTML={{
+    __html: renderMarkdown(content, markdownResolver)
+  }} /> : loadingDoc ? <div className="muted">Loading document...</div> : <div className="empty">
       <h3>No document selected</h3>
       <p>
-        {startPageSlug
-          ? "Select a document from the left sidebar."
-          : "Create your Start page by clicking New."}
+        {sectionFilter === "drafts" ? "No drafts are available in this section yet." : sectionFilter === "unlisted" ? "No unlisted documents are available right now." : sectionFilter === "library" ? "No library documents are available right now." : startPageSlug ? "Select a document from the left sidebar." : "Create your Start page by clicking New."}
       </p>
-    </div>
-  );
-
+    </div>;
   const prevEditorSlugRef = useRef(null);
   useEffect(() => {
     const current = selectedDoc?.slug || null;
@@ -1937,14 +1930,10 @@ export default function useWorkspaceSession() {
     }
     prevEditorSlugRef.current = current;
   }, [editorMode, selectedDoc?.slug, showEditor]);
-
-  const editorSlug =
-    editorMode === "edit" && selectedDoc ? selectedDoc.slug : "";
+  const editorSlug = editorMode === "edit" && selectedDoc ? selectedDoc.slug : "";
   const editorInitial = editorDraft ?? (editorMode === "edit" ? content : "");
-  const editorInitialFolder =
-    editorMode === "edit" ? selectedDoc?.is_folder : editorCreateFolderMode;
+  const editorInitialFolder = editorMode === "edit" ? selectedDoc?.is_folder : editorCreateFolderMode;
   const editorIsHome = editorMode === "edit" ? !!selectedDoc?.is_home : false;
-
   const editorSharedProps = {
     slug: editorSlug,
     initial: editorInitial,
@@ -1960,9 +1949,8 @@ export default function useWorkspaceSession() {
     parentOptions: editorMode === "new" ? locationOptions : [],
     onParentSlugChange: editorMode === "new" ? handleEditorParentChange : null,
     isHome: editorIsHome,
-    onDraftAutoSaved: handleDraftAutoSaved,
+    onDraftAutoSaved: handleDraftAutoSaved
   };
-
   const sidebarProps = {
     search,
     onSearchChange: setSearch,
@@ -1988,9 +1976,8 @@ export default function useWorkspaceSession() {
     openNew: openNewModal,
     disableNew: showEditor,
     onMove: handleMoveNode,
-    onSetStatus: handleSetStatus,
+    onSetStatus: handleSetStatus
   };
-
   const workspaceEditorProps = {
     showEditor,
     editorDualPane,
@@ -2000,24 +1987,21 @@ export default function useWorkspaceSession() {
     onExitDualPane: handleExitDualPane,
     onShowAbout: handleShowAbout,
     onStartEditing: handlePreviewEdit,
-    onOpenReader: handleOpenReader,
+    onOpenReader: handleOpenReader
   };
-
   const parentPickerProps = {
     show: Boolean(parentPickerState),
     tree,
     state: parentPickerState || {},
     onClose: closeParentPicker,
-    onConfirm: handleParentSelected,
+    onConfirm: handleParentSelected
   };
-
   const newModalProps = {
     show: showNewModal,
     onClose: closeNewModal,
     onDocument: handleNewDocument,
-    onFolderSelect: promptNewFolder,
+    onFolderSelect: promptNewFolder
   };
-
   const folderPromptProps = {
     show: showFolderPrompt,
     folderName,
@@ -2026,9 +2010,8 @@ export default function useWorkspaceSession() {
     onSave: handleFolderSave,
     busy: folderSaving,
     error: folderError,
-    parentSlug: pendingFolderParent || "",
+    parentSlug: pendingFolderParent || ""
   };
-
   const aboutModalProps = {
     show: showAboutModal,
     selectedDoc,
@@ -2043,27 +2026,24 @@ export default function useWorkspaceSession() {
     historyDiffEntryId,
     onHistoryDiff: handleHistoryDiff,
     onHistoryRollback: handleHistoryRollback,
-    canRestoreHistory,
+    canRestoreHistory
   };
-
   const readerModalProps = {
     show: showReaderModal,
     selectedDoc,
     html: renderMarkdown(content, markdownResolver),
     info: aboutDocInfo,
-    onClose: handleCloseReader,
+    onClose: handleCloseReader
   };
-
   const editorOverlayProps = {
     show: showEditor && editorDualPane,
     component: Editor,
     props: {
       ...editorSharedProps,
       isDualPane: true,
-      onExitDualPane: handleExitDualPane,
-    },
+      onExitDualPane: handleExitDualPane
+    }
   };
-
   const settingsProps = {
     show: showSettings,
     user,
@@ -2075,74 +2055,39 @@ export default function useWorkspaceSession() {
     onSetStartPage: handleSetStartPage,
     onNuke: handleNukeWorkspace,
     onAppIconChange: handleAppIconChange,
-    onAppTitleChange: handleAppTitleChange,
+    onAppTitleChange: handleAppTitleChange
   };
-
   const errorProps = {
     message: error,
-    onClose: () => setError(null),
+    onClose: () => setError(null)
   };
-
   const historyDiffProps = {
     show: showHistoryDiff,
     data: historyDiffData,
     loading: historyDiffLoading,
     error: historyDiffError,
     onClose: () => {
+      historyDiffRequestRef.current += 1;
       setShowHistoryDiff(false);
       setHistoryDiffData(null);
       setHistoryDiffError(null);
-    },
+      setHistoryDiffLoading(false);
+      setHistoryDiffEntryId(null);
+    }
   };
-
-  const showOnboarding =
-    bootstrapReady && bootstrapInfo.fresh && !onboardingComplete;
-  const appTitleText =
-    (bootstrapInfo.appTitle || "").trim() || DEFAULT_APP_TITLE;
-
+  const showOnboarding = bootstrapReady && bootstrapInfo.fresh && !onboardingComplete;
+  const appTitleText = (bootstrapInfo.appTitle || "").trim() || DEFAULT_APP_TITLE;
   useEffect(() => {
     if (!bootstrapReady) return;
     document.title = appTitleText;
   }, [appTitleText, bootstrapReady]);
-
-  const mainContent = !bootstrapReady ? (
-    <div className="auth-view">
+  const mainContent = !bootstrapReady ? <div className="auth-view">
       <div className="auth-inner">
         <div className="muted">Loading configuration...</div>
       </div>
-    </div>
-  ) : showOnboarding ? (
-    <WorkspaceSetupFlow
-      stage={onboardingStep}
-      onStageChange={setOnboardingStep}
-      onLogin={(u) => setUser(u)}
-      onComplete={handleOnboardingComplete}
-      bootstrap={bootstrapInfo}
-    />
-  ) : !user ? (
-    <AuthCanvas
-      title="Sign in to your team wiki"
-      description="Docs are ready when you are."
-      brandTitle={appTitleText}
-      brandSubtitle="Document knowledge base"
-      brandIcon={bootstrapInfo.appIcon}
-    >
-      <LoginCard onLogin={(u) => setUser(u)} />
-    </AuthCanvas>
-  ) : (
-    <WorkspaceLayout
-      appTitleText={appTitleText}
-      bootstrapInfo={bootstrapInfo}
-      activeUsers={activeUsers}
-      onOpenSettings={() => setShowSettings(true)}
-      onLogout={handleLogout}
-      sidebarProps={sidebarProps}
-      editorComponent={Editor}
-      editorProps={workspaceEditorProps}
-      previewContent={previewContent}
-    />
-  );
-
+    </div> : showOnboarding ? <WorkspaceSetupFlow stage={onboardingStep} onStageChange={setOnboardingStep} onComplete={handleOnboardingComplete} bootstrap={bootstrapInfo} /> : !user ? <AuthCanvas title="Sign in to your team wiki" description="Docs are ready when you are." brandTitle={appTitleText} brandSubtitle="Document knowledge base" brandIcon={bootstrapInfo.appIcon}>
+      <LoginCard onLogin={u => setUser(u)} seededAccounts={bootstrapInfo.seededAccounts} showSeededAccounts={bootstrapInfo.seededAccountsOnly} />
+    </AuthCanvas> : <WorkspaceLayout appTitleText={appTitleText} bootstrapInfo={bootstrapInfo} activeUsers={activeUsers} onGoHome={handleGoHome} onOpenSettings={handleOpenSettings} onLogout={handleLogout} sidebarProps={sidebarProps} editorComponent={Editor} editorProps={workspaceEditorProps} previewContent={previewContent} />;
   return {
     editing,
     mainContent,
@@ -2154,6 +2099,6 @@ export default function useWorkspaceSession() {
     editorOverlayProps,
     settingsProps,
     errorProps,
-    historyDiffProps,
+    historyDiffProps
   };
 }
